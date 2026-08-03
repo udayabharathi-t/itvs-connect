@@ -12,7 +12,6 @@ android {
         applicationId = "com.itvs.connect"
         minSdk = 26
         targetSdk = 34
-<<<<<<< HEAD
         versionCode = 2
         versionName = "1.0.0-alpha.1"
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
@@ -38,16 +37,6 @@ android {
             isMinifyEnabled = false
             isDebuggable = false
             signingConfig = signingConfigs.getByName("release")
-=======
-        versionCode = 1
-        versionName = "1.0.0-alpha"
-        testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
-    }
-
-    buildTypes {
-        release {
-            isMinifyEnabled = false
->>>>>>> origin/main
             proguardFiles(
                 getDefaultProguardFile("proguard-android-optimize.txt"),
                 "proguard-rules.pro"
@@ -94,10 +83,7 @@ dependencies {
     androidTestImplementation(composeBom)
 
     implementation("androidx.core:core-ktx:1.13.1")
-<<<<<<< HEAD
     implementation("androidx.fragment:fragment-ktx:1.8.1")
-=======
->>>>>>> origin/main
     implementation("androidx.lifecycle:lifecycle-runtime-ktx:2.8.3")
     implementation("androidx.lifecycle:lifecycle-runtime-compose:2.8.3")
     implementation("androidx.lifecycle:lifecycle-viewmodel-compose:2.8.3")
