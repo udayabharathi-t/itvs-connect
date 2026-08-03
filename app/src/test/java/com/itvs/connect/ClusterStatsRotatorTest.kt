@@ -84,6 +84,20 @@ class ClusterStatsRotatorTest {
     }
 
     @Test
+    fun mapsParserHandlesBulletAndArriveBy() {
+        val snap = MapsNavParser.parse("Arrive by 5:10 PM • 12.5 km • 28 min")
+        assertThat(snap.etaText).contains("5:10")
+        assertThat(snap.remainingDistanceText).isEqualTo("12.5 km")
+    }
+
+    @Test
+    fun mapsParserStripsFieldPrefix() {
+        val snap = MapsNavParser.parse("FIELD:nav_time=15 min · 4.2 km · 4:32 PM")
+        assertThat(snap.etaText).isEqualTo("4:32 PM")
+        assertThat(snap.remainingDistanceText).isEqualTo("4.2 km")
+    }
+
+    @Test
     fun mapsSnapshotShowsNaWhenStale() {
         val stale = MapsNavSnapshot(
             etaText = "10m",

@@ -3,7 +3,6 @@ package com.itvs.connect.ui.screens
 import android.content.Intent
 import android.net.Uri
 import android.provider.Settings
-import androidx.compose.foundation.background
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
@@ -13,7 +12,6 @@ import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.rememberScrollState
-import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material3.Button
 import androidx.compose.material3.MaterialTheme
@@ -22,6 +20,7 @@ import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.Switch
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
@@ -29,11 +28,15 @@ import androidx.compose.runtime.setValue
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.unit.dp
+import com.itvs.connect.ble.MapsNavigationStore
+import com.itvs.connect.ble.MapsNotificationHarvester
+import com.itvs.connect.ble.NotificationMirrorService
 import com.itvs.connect.data.AppSettings
 import com.itvs.connect.data.ParkedLocationEntity
 import com.itvs.connect.data.SavedPlaceEntity
 import com.itvs.connect.ui.components.SectionHeader
 import com.itvs.connect.util.Formatters
+import kotlinx.coroutines.delay
 
 @Composable
 fun MoreScreen(
@@ -47,6 +50,22 @@ fun MoreScreen(
 ) {
     val context = LocalContext.current
     var placeName by remember { mutableStateOf("") }
+    var mapsAccessOn by remember {
+        mutableStateOf(MapsNotificationHarvester.isNotificationAccessEnabled(context))
+    }
+    var mapsDebug by remember { mutableStateOf(MapsNotificationHarvester.debug) }
+    var mapsSnap by remember { mutableStateOf(MapsNavigationStore.snapshot) }
+
+    LaunchedEffect(Unit) {
+        while (true) {
+            MapsNotificationHarvester.refreshListenerFlag(context)
+            NotificationMirrorService.requestMapsPoll()
+            mapsAccessOn = MapsNotificationHarvester.isNotificationAccessEnabled(context)
+            mapsDebug = MapsNotificationHarvester.debug
+            mapsSnap = MapsNavigationStore.snapshot
+            delay(2_000)
+        }
+    }
 
     Column(
         modifier = Modifier
@@ -106,6 +125,34 @@ fun MoreScreen(
         }
 
         Spacer(Modifier.height(12.dp))
+        Text("Maps navigation (no API key)", style = MaterialTheme.typography.titleLarge)
+        Spacer(Modifier.height(6.dp))
+        Text(
+            buildString {
+                append("Notification access: ")
+                append(if (mapsAccessOn) "On" else "Off — required")
+                append('\n')
+                append("Maps ETA: ")
+                append(mapsSnap.etaOrNa())
+                append(" · Dist left: ")
+                append(mapsSnap.distanceOrNa())
+                append('\n')
+                when {
+                    !mapsAccessOn ->
+                        append("Open settings below and enable iTVS Connect.")
+                    mapsDebug.mapsNotifSeen && mapsDebug.lastError != null ->
+                        append(mapsDebug.lastError)
+                    mapsDebug.mapsNotifSeen ->
+                        append("Harvested: ${mapsDebug.lastRawPreview.ifBlank { mapsSnap.rawPreview }}")
+                    mapsDebug.lastError != null ->
+                        append(mapsDebug.lastError)
+                    else ->
+                        append("Start turn-by-turn navigation in Google Maps while riding.")
+                }
+            },
+            style = MaterialTheme.typography.bodyMedium
+        )
+        Spacer(Modifier.height(8.dp))
         Button(
             onClick = {
                 context.startActivity(
