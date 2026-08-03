@@ -138,7 +138,16 @@ fun MoreScreen(
                 modifier = Modifier.fillMaxWidth()
             ) {
                 Column(modifier = Modifier.fillMaxWidth()) {
-                    Text(Formatters.dateTime(loc.timestampMs), style = MaterialTheme.typography.bodyLarge)
+                    Text(
+                        loc.label.ifBlank { Formatters.dateTime(loc.timestampMs) },
+                        style = MaterialTheme.typography.bodyLarge
+                    )
+                    if (loc.label.isNotBlank()) {
+                        Text(
+                            Formatters.dateTime(loc.timestampMs),
+                            style = MaterialTheme.typography.bodyMedium
+                        )
+                    }
                     Text(
                         "%.5f, %.5f%s".format(
                             loc.latitude,

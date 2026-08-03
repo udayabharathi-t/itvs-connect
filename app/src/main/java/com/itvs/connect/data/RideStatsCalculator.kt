@@ -149,7 +149,10 @@ object RideStatsCalculator {
             endLat = last.endLat,
             endLng = last.endLng,
             routeJson = "[]",
-            notes = "Merged from ${ordered.size} rides"
+            notes = "Merged from ${ordered.size} rides",
+            label = "",
+            startPlaceName = first.startPlaceName,
+            endPlaceName = last.endPlaceName
         )
     }
 

@@ -202,7 +202,12 @@ private fun AppRoot(vm: AppViewModel) {
             ) { entry ->
                 val id = entry.arguments?.getLong("id") ?: return@composable
                 val ride by vm.ride(id).collectAsState()
-                RideDetailScreen(ride = ride, onBack = { nav.popBackStack() })
+                RideDetailScreen(
+                    ride = ride,
+                    onBack = { nav.popBackStack() },
+                    onSaveLabel = vm::updateRideLabel,
+                    onEnrichPlaces = vm::enrichRidePlaceNames
+                )
             }
             composable("buttons") {
                 ButtonsScreen(settings = settings, onChange = vm::updateSettings)

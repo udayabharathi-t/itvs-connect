@@ -24,8 +24,10 @@ class RideTracker(
     private val database: AppDatabase,
     private val preferences: PreferencesRepository
 ) {
+    private val appContext = context.applicationContext
     private val fused = LocationServices.getFusedLocationProviderClient(context)
     private val gson = Gson()
+    private val placeNames = PlaceNameResolver(appContext)
 
     private var active = false
     private var startTimeMs = 0L
@@ -164,6 +166,11 @@ class RideTracker(
 
         val endLat = lastLocation?.latitude
         val endLng = lastLocation?.longitude
+
+        // Resolve place names before insert so the first list paint already has labels.
+        val startPlace = placeNames.resolve(startLat, startLng)
+        val endPlace = placeNames.resolve(endLat, endLng)
+
         val entity = RideEntity(
             startTimeMs = startTimeMs,
             endTimeMs = endTime,
@@ -183,13 +190,15 @@ class RideTracker(
             startLng = startLng,
             endLat = endLat,
             endLng = endLng,
-            routeJson = gson.toJson(route)
+            routeJson = gson.toJson(route),
+            startPlaceName = startPlace,
+            endPlaceName = endPlace
         )
         val id = database.rideDao().insert(entity)
         _activeRide.value = null
 
         if (endLat != null && endLng != null) {
-            saveSingleParkedLocation(endLat, endLng, isManual = false)
+            saveSingleParkedLocation(endLat, endLng, isManual = false, placeName = endPlace)
         }
         return entity.copy(id = id)
     }
@@ -247,22 +256,44 @@ class RideTracker(
             fused.getCurrentLocation(Priority.PRIORITY_HIGH_ACCURACY, null).await()
                 ?: fused.lastLocation.await()
         }.getOrNull() ?: lastLocation ?: return null
-        return saveSingleParkedLocation(loc.latitude, loc.longitude, isManual)
+        val place = placeNames.resolve(loc.latitude, loc.longitude)
+        return saveSingleParkedLocation(loc.latitude, loc.longitude, isManual, place)
+    }
+
+    /**
+     * Fills missing start/end place names for an existing ride (e.g. older records).
+     */
+    suspend fun enrichPlaceNames(rideId: Long): RideEntity? {
+        val ride = database.rideDao().getById(rideId) ?: return null
+        val needStart = ride.startPlaceName.isNullOrBlank() &&
+            ride.startLat != null && ride.startLng != null
+        val needEnd = ride.endPlaceName.isNullOrBlank() &&
+            ride.endLat != null && ride.endLng != null
+        if (!needStart && !needEnd) return ride
+        val start = if (needStart) placeNames.resolve(ride.startLat, ride.startLng)
+        else ride.startPlaceName
+        val end = if (needEnd) placeNames.resolve(ride.endLat, ride.endLng)
+        else ride.endPlaceName
+        database.rideDao().updatePlaceNames(rideId, start, end)
+        return ride.copy(startPlaceName = start, endPlaceName = end)
     }
 
     private suspend fun saveSingleParkedLocation(
         lat: Double,
         lng: Double,
-        isManual: Boolean
+        isManual: Boolean,
+        placeName: String? = null
     ): ParkedLocationEntity {
         // Keep only one parked pin (latest end location).
         database.parkedLocationDao().clearAll()
+        val resolved = placeName ?: placeNames.resolve(lat, lng)
         val entity = ParkedLocationEntity(
             latitude = lat,
             longitude = lng,
             timestampMs = System.currentTimeMillis(),
             isManual = isManual,
-            label = if (isManual) "Manual" else "Last parked"
+            label = resolved?.takeIf { it.isNotBlank() }
+                ?: if (isManual) "Manual" else "Last parked"
         )
         val id = database.parkedLocationDao().insert(entity)
         return entity.copy(id = id)
