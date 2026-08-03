@@ -44,6 +44,7 @@ class PhoneMediaController(private val context: Context) {
                     runCatching { context.startActivity(dial) }
                 }
             }
+            ButtonAction.ROTATE_RIDE_STATS,
             ButtonAction.DO_NOTHING -> Unit
         }
     }

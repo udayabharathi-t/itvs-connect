@@ -13,7 +13,8 @@ import com.itvs.connect.data.PreferencesRepository
 
 /**
  * Mirrors selected app notifications onto the scooter cluster (17-char rows).
- * Navigation HUD is intentionally out of scope for v1.
+ * Also harvests Google Maps ETA / remaining distance for the ride-stats rotator.
+ * Full turn-by-turn HUD remains v2.
  */
 class NotificationMirrorService : NotificationListenerService() {
 
@@ -31,11 +32,17 @@ class NotificationMirrorService : NotificationListenerService() {
     }
 
     override fun onNotificationPosted(sbn: StatusBarNotification?) {
-        if (sbn == null || sbn.isOngoing) return
+        if (sbn == null) return
         val pkg = sbn.packageName ?: return
-        // Skip own + maps (nav is v2)
         if (pkg == packageName) return
-        if (pkg.contains("maps", ignoreCase = true)) return
+
+        if (MapsNavParser.isMapsPackage(pkg)) {
+            harvestMaps(sbn)
+            return
+        }
+
+        // Non-maps: only transient notifications (skip ongoing)
+        if (sbn.isOngoing) return
 
         scope.launch {
             val settings = prefs.settings.first()
@@ -50,12 +57,31 @@ class NotificationMirrorService : NotificationListenerService() {
                 .chunked(17)
                 .ifEmpty { return@launch }
 
-            // Send first page immediately; service will paginate lightly
             val intent = Intent(this@NotificationMirrorService, ScooterBleService::class.java)
                 .setAction(ScooterBleService.ACTION_CLUSTER_MESSAGE)
                 .putExtra(ScooterBleService.EXTRA_ROW1, chunks.getOrElse(0) { "" })
                 .putExtra(ScooterBleService.EXTRA_ROW2, chunks.getOrElse(1) { "" })
             startForegroundService(intent)
+        }
+    }
+
+    override fun onNotificationRemoved(sbn: StatusBarNotification?) {
+        val pkg = sbn?.packageName ?: return
+        if (MapsNavParser.isMapsPackage(pkg)) {
+            MapsNavigationStore.clear()
+        }
+    }
+
+    private fun harvestMaps(sbn: StatusBarNotification) {
+        val extras = sbn.notification.extras
+        val title = extras.getCharSequence("android.title")?.toString()
+        val text = extras.getCharSequence("android.text")?.toString()
+        val bigText = extras.getCharSequence("android.bigText")?.toString()
+        val subText = extras.getCharSequence("android.subText")?.toString()
+        val infoText = extras.getCharSequence("android.infoText")?.toString()
+        val parsed = MapsNavParser.parse(title, text, bigText, subText, infoText)
+        if (parsed.etaText != null || parsed.remainingDistanceText != null) {
+            MapsNavigationStore.update(parsed.etaText, parsed.remainingDistanceText)
         }
     }
 }

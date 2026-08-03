@@ -49,6 +49,7 @@ class ScooterBleService : Service() {
     private var rideEndJob: Job? = null
     private var flashClearJob: Job? = null
     private var callState: String = TelephonyManager.EXTRA_STATE_IDLE
+    private lateinit var statsRotator: ClusterStatsRotator
 
     private lateinit var gestureDetector: ButtonGestureDetector
 
@@ -71,6 +72,18 @@ class ScooterBleService : Service() {
                     // During hold coalescing we approximate long action for count==1
                     else -> settings.longPress
                 }
+            }
+        )
+
+        statsRotator = ClusterStatsRotator(
+            scope = scope,
+            flash = { r1, r2 -> flashCluster(r1, r2) },
+            provider = {
+                ClusterStatsRotator.fromLive(
+                    ride = rideTracker.activeRide.value,
+                    liveAfe = ble.averageFuelEconomy.value,
+                    maps = MapsNavigationStore.snapshot
+                )
             }
         )
 
@@ -103,9 +116,12 @@ class ScooterBleService : Service() {
                 stopSelf()
             }
             ACTION_CLUSTER_MESSAGE -> {
-                val r1 = intent.getStringExtra(EXTRA_ROW1).orEmpty()
-                val r2 = intent.getStringExtra(EXTRA_ROW2).orEmpty()
-                if (r1.isNotBlank()) flashCluster(r1, r2)
+                // Don't clobber an active stats rotation with unrelated mirrors.
+                if (!statsRotator.isRunning) {
+                    val r1 = intent.getStringExtra(EXTRA_ROW1).orEmpty()
+                    val r2 = intent.getStringExtra(EXTRA_ROW2).orEmpty()
+                    if (r1.isNotBlank()) flashCluster(r1, r2)
+                }
             }
         }
         return START_STICKY
@@ -115,6 +131,7 @@ class ScooterBleService : Service() {
 
     override fun onDestroy() {
         runCatching { unregisterReceiver(callReceiver) }
+        statsRotator.stop()
         rideEndJob?.cancel()
         releaseWakeLock()
         scope.cancel()
@@ -153,6 +170,7 @@ class ScooterBleService : Service() {
 
                 // Disconnect should immediately finalize the in-progress ride.
                 if (state is ConnectionState.Disconnected || state is ConnectionState.Failed) {
+                    statsRotator.stop()
                     if (rideTracker.isActive()) {
                         rideEndJob?.cancel()
                         rideEndJob = null
@@ -240,6 +258,7 @@ class ScooterBleService : Service() {
                 delay(3_000)
                 if (!settings.appNotificationsEnabled) continue
                 if (!rideTracker.isActive()) continue
+                if (statsRotator.isRunning) continue
                 val label = media.currentTrackLabel() ?: continue
                 if (label == lastTrack) continue
                 lastTrack = label
@@ -274,6 +293,16 @@ class ScooterBleService : Service() {
             isLong && count == 3 -> settings.doubleLongPress
             isLong && count >= 4 -> settings.tripleLongPress
             else -> ButtonAction.DO_NOTHING
+        }
+        if (action == ButtonAction.ROTATE_RIDE_STATS) {
+            if (statsRotator.isRunning) {
+                statsRotator.stop()
+                flashCluster("Stats stopped")
+            } else {
+                // Starts immediately with Ride time, then advances every 10s.
+                statsRotator.start()
+            }
+            return
         }
         val dial = when {
             !isLong && count == 1 -> settings.speedDialSingle

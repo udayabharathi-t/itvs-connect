@@ -41,7 +41,7 @@ fun ButtonsScreen(
     ) {
         SectionHeader(
             "Button mapping",
-            "Map the scooter Voice button gestures. Navigation actions are reserved for v2."
+            "Map Voice-button gestures. Choose Rotate ride stats to cycle ride time, mileage, and Maps ETA on the cluster every 10s (press again to stop)."
         )
 
         ActionPicker("Single tap", settings.singlePress) {
