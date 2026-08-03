@@ -17,11 +17,17 @@ interface RideDao {
     @Query("SELECT * FROM rides WHERE id = :id")
     suspend fun getById(id: Long): RideEntity?
 
+    @Query("SELECT * FROM rides WHERE id IN (:ids)")
+    suspend fun getByIds(ids: List<Long>): List<RideEntity>
+
     @Insert(onConflict = OnConflictStrategy.REPLACE)
     suspend fun insert(ride: RideEntity): Long
 
     @Query("DELETE FROM rides WHERE id = :id")
     suspend fun delete(id: Long)
+
+    @Query("DELETE FROM rides WHERE id IN (:ids)")
+    suspend fun deleteIds(ids: List<Long>)
 
     @Query("SELECT COUNT(*) FROM rides")
     suspend fun count(): Int
@@ -41,13 +47,16 @@ interface RideDao {
 @Dao
 interface ParkedLocationDao {
     @Query("SELECT * FROM parked_locations ORDER BY timestampMs DESC LIMIT :limit")
-    fun observeRecent(limit: Int = 50): Flow<List<ParkedLocationEntity>>
+    fun observeRecent(limit: Int = 1): Flow<List<ParkedLocationEntity>>
 
     @Insert(onConflict = OnConflictStrategy.REPLACE)
     suspend fun insert(location: ParkedLocationEntity): Long
 
+    @Query("DELETE FROM parked_locations")
+    suspend fun clearAll()
+
     @Query("DELETE FROM parked_locations WHERE id NOT IN (SELECT id FROM parked_locations ORDER BY timestampMs DESC LIMIT :keep)")
-    suspend fun trim(keep: Int = 50)
+    suspend fun trim(keep: Int = 1)
 }
 
 @Dao

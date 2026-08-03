@@ -184,14 +184,16 @@ private fun AppRoot(vm: AppViewModel) {
                     onScan = vm::scan,
                     onDisconnect = vm::disconnect,
                     onFindMe = vm::findMe,
-                    onDropPin = vm::dropPin
+                    onDropPin = vm::dropPin,
+                    onConnectMac = vm::connectMac
                 )
             }
             composable("rides") {
                 RidesScreen(
                     rides = rides,
                     onOpen = { id -> nav.navigate("ride/$id") },
-                    onDelete = vm::deleteRide
+                    onDelete = vm::deleteRide,
+                    onMerge = vm::mergeRides
                 )
             }
             composable(

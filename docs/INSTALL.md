@@ -38,8 +38,14 @@ Package id: `com.itvs.connect`
 2. Allow **Bluetooth**, **Location**, **Notifications**, and **Phone** when asked.
 3. Optionally: **Settings → Apps → iTVS Connect → Battery → Unrestricted** (keeps BLE/ride tracking alive).
 4. Tap **Scan & pair scooter**.
+5. If pairing hangs: **Force stop TVS Connect**, keep scooter cluster ON, enable Location, then scan again and **tap your scooter** in Nearby devices.
 
-## Still blocked?
+## Pairing tips
+
+- Official TVS Connect must not hold the BLE link — Force stop it (removing the vehicle is optional).
+- iTVS Connect no longer filters BLE ads by service UUID (that caused forever-scanning).
+- After scan, tap a **Likely scooter** row if auto-connect does not happen.
+- Phone **Settings → Location** must be ON for BLE scanning on many Androids.
 
 - Uninstall any older `iTVS Connect` / `*.debug` build first.
 - Re-download the **release** APK (not the debug one).

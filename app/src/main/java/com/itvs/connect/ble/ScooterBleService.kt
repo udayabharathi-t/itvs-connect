@@ -94,6 +94,10 @@ class ScooterBleService : Service() {
                 val s = prefs.settings.first()
                 ble.startScan(s.scooterMac.ifBlank { null })
             }
+            ACTION_CONNECT_MAC -> {
+                val mac = intent.getStringExtra(EXTRA_MAC).orEmpty()
+                if (mac.isNotBlank()) ble.connectMac(mac, autoConnect = false)
+            }
             ACTION_DISCONNECT -> ble.disconnect()
             ACTION_STOP -> {
                 stopSelf()
@@ -143,8 +147,20 @@ class ScooterBleService : Service() {
                         prefs.setScooter(state.mac, state.deviceName)
                         getString(R.string.service_notification_title)
                     }
+                    is ConnectionState.Failed -> state.reason.take(80).ifBlank { "Pairing issue" }
                 }
                 notify(text)
+
+                // Disconnect should immediately finalize the in-progress ride.
+                if (state is ConnectionState.Disconnected || state is ConnectionState.Failed) {
+                    if (rideTracker.isActive()) {
+                        rideEndJob?.cancel()
+                        rideEndJob = null
+                        rideTracker.endRideIfNeeded()
+                        releaseWakeLock()
+                        notify("Ride saved · disconnected")
+                    }
+                }
             }
         }
         scope.launch {
@@ -162,13 +178,18 @@ class ScooterBleService : Service() {
                     )
                     notify(getString(R.string.ride_notification_title))
                 } else if (rideTracker.isActive()) {
-                    rideTracker.captureParkedLocation(isManual = false)
-                    rideEndJob?.cancel()
-                    rideEndJob = scope.launch {
-                        delay(BleConstants.RIDE_END_GRACE_MS)
-                        rideTracker.endRideIfNeeded()
-                        releaseWakeLock()
-                        notify(getString(R.string.service_notification_title))
+                    // Soft end: grace period in case of brief telemetry gaps while still connected.
+                    // Hard disconnect path above ends immediately.
+                    if (ble.connectionState.value is ConnectionState.Connected) {
+                        rideEndJob?.cancel()
+                        rideEndJob = scope.launch {
+                            delay(BleConstants.RIDE_END_GRACE_MS)
+                            if (!ble.isTelemetryActive.value && rideTracker.isActive()) {
+                                rideTracker.endRideIfNeeded()
+                                releaseWakeLock()
+                                notify(getString(R.string.service_notification_title))
+                            }
+                        }
                     }
                 }
             }
@@ -366,11 +387,13 @@ class ScooterBleService : Service() {
     companion object {
         const val ACTION_FIND_ME = "com.itvs.connect.action.FIND_ME"
         const val ACTION_START_SCAN = "com.itvs.connect.action.START_SCAN"
+        const val ACTION_CONNECT_MAC = "com.itvs.connect.action.CONNECT_MAC"
         const val ACTION_DISCONNECT = "com.itvs.connect.action.DISCONNECT"
         const val ACTION_STOP = "com.itvs.connect.action.STOP"
         const val ACTION_CLUSTER_MESSAGE = "com.itvs.connect.action.CLUSTER_MESSAGE"
         const val EXTRA_ROW1 = "row1"
         const val EXTRA_ROW2 = "row2"
+        const val EXTRA_MAC = "mac"
 
         private const val CHANNEL_CONN = "scooter_conn"
         private const val CHANNEL_RIDE = "scooter_ride"

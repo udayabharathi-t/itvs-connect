@@ -40,6 +40,7 @@ class RideTracker(
     private var startLat: Double? = null
     private var startLng: Double? = null
     private val route = mutableListOf<RoutePoint>()
+    private val afeSamples = mutableListOf<Int>()
     private var tankCapacity = 5.1
 
     private val _activeRide = MutableStateFlow<ActiveRideUi?>(null)
@@ -58,7 +59,8 @@ class RideTracker(
         val durationMs: Long,
         val currentSpeedKmh: Double,
         val fuelPercent: Int?,
-        val afe: Int?
+        val afe: Int?,
+        val avgAfe: Double?
     )
 
     fun onTelemetry(
@@ -71,6 +73,15 @@ class RideTracker(
         latestOdo = odometerKm
         latestFuel = fuelPercent
         latestAfe = afe
+        if (active && afe in 1..99) {
+            // Keep a running sample stream for average km/L (cap memory).
+            afeSamples += afe
+            if (afeSamples.size > 2_000) {
+                val compacted = afeSamples.filterIndexed { index, _ -> index % 2 == 0 }.toMutableList()
+                afeSamples.clear()
+                afeSamples.addAll(compacted)
+            }
+        }
         if (active) {
             publishActive()
         }
@@ -90,15 +101,19 @@ class RideTracker(
         active = true
         tankCapacity = tankCapacityLitres
         startTimeMs = System.currentTimeMillis()
-        startOdo = odometerKm
-        startFuel = fuelPercent
-        latestOdo = odometerKm
-        latestFuel = fuelPercent
-        latestAfe = afe
+        startOdo = odometerKm.takeIf { it > 0.0 }
+        startFuel = fuelPercent.takeIf { it > 0 }
+        latestOdo = startOdo
+        latestFuel = startFuel
+        latestAfe = afe.takeIf { it in 1..99 }
         maxSpeed = 0.0
         gpsDistanceM = 0.0
         lastLocation = null
+        startLat = null
+        startLng = null
         route.clear()
+        afeSamples.clear()
+        if (afe in 1..99) afeSamples += afe
         preferences.setRideMode(true)
 
         val request = LocationRequest.Builder(Priority.PRIORITY_HIGH_ACCURACY, 2_000L)
@@ -118,6 +133,14 @@ class RideTracker(
         runCatching { fused.removeLocationUpdates(locationCallback) }
         preferences.setRideMode(false)
 
+        // Prefer a fresh high-accuracy fix for end/parked pin.
+        val endFix = runCatching {
+            fused.getCurrentLocation(Priority.PRIORITY_HIGH_ACCURACY, null).await()
+        }.getOrNull() ?: lastLocation
+        if (endFix != null) {
+            lastLocation = endFix
+        }
+
         val endTime = System.currentTimeMillis()
         val metrics = RideStatsCalculator.compute(
             startOdo = startOdo,
@@ -129,6 +152,7 @@ class RideTracker(
             endFuelPercent = latestFuel,
             tankCapacityLitres = tankCapacity,
             clusterAfe = latestAfe,
+            afeSamples = afeSamples.toList(),
             maxSpeedKmh = maxSpeed
         )
 
@@ -138,6 +162,8 @@ class RideTracker(
             return null
         }
 
+        val endLat = lastLocation?.latitude
+        val endLng = lastLocation?.longitude
         val entity = RideEntity(
             startTimeMs = startTimeMs,
             endTimeMs = endTime,
@@ -155,12 +181,16 @@ class RideTracker(
             maxSpeedKmh = maxSpeed,
             startLat = startLat,
             startLng = startLng,
-            endLat = lastLocation?.latitude,
-            endLng = lastLocation?.longitude,
+            endLat = endLat,
+            endLng = endLng,
             routeJson = gson.toJson(route)
         )
         val id = database.rideDao().insert(entity)
         _activeRide.value = null
+
+        if (endLat != null && endLng != null) {
+            saveSingleParkedLocation(endLat, endLng, isManual = false)
+        }
         return entity.copy(id = id)
     }
 
@@ -182,7 +212,6 @@ class RideTracker(
         val speedKmh = if (loc.hasSpeed()) loc.speed * 3.6 else 0.0
         if (speedKmh > maxSpeed) maxSpeed = speedKmh
         route += RoutePoint(loc.latitude, loc.longitude, speedKmh.toFloat(), loc.time)
-        // Cap route samples to keep local DB light
         if (route.size > 5_000) {
             val compacted = route.filterIndexed { index, _ -> index % 2 == 0 }.toMutableList()
             route.clear()
@@ -207,21 +236,35 @@ class RideTracker(
                 if (it.hasSpeed()) it.speed * 3.6 else 0.0
             } ?: 0.0,
             fuelPercent = latestFuel,
-            afe = latestAfe
+            afe = latestAfe,
+            avgAfe = RideStatsCalculator.averageAfe(afeSamples)
         )
     }
 
     @SuppressLint("MissingPermission")
     suspend fun captureParkedLocation(isManual: Boolean = false): ParkedLocationEntity? {
-        val loc = runCatching { fused.lastLocation.await() }.getOrNull() ?: return null
+        val loc = runCatching {
+            fused.getCurrentLocation(Priority.PRIORITY_HIGH_ACCURACY, null).await()
+                ?: fused.lastLocation.await()
+        }.getOrNull() ?: lastLocation ?: return null
+        return saveSingleParkedLocation(loc.latitude, loc.longitude, isManual)
+    }
+
+    private suspend fun saveSingleParkedLocation(
+        lat: Double,
+        lng: Double,
+        isManual: Boolean
+    ): ParkedLocationEntity {
+        // Keep only one parked pin (latest end location).
+        database.parkedLocationDao().clearAll()
         val entity = ParkedLocationEntity(
-            latitude = loc.latitude,
-            longitude = loc.longitude,
+            latitude = lat,
+            longitude = lng,
             timestampMs = System.currentTimeMillis(),
-            isManual = isManual
+            isManual = isManual,
+            label = if (isManual) "Manual" else "Last parked"
         )
-        database.parkedLocationDao().insert(entity)
-        database.parkedLocationDao().trim(50)
-        return entity
+        val id = database.parkedLocationDao().insert(entity)
+        return entity.copy(id = id)
     }
 }
