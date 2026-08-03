@@ -27,9 +27,11 @@ import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedButton
+import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
@@ -38,6 +40,7 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.unit.dp
+import com.itvs.connect.data.PlaceNameResolver
 import com.itvs.connect.data.RideEntity
 import com.itvs.connect.data.RideStatsCalculator
 import com.itvs.connect.ui.components.SectionHeader
@@ -64,7 +67,7 @@ fun RidesScreen(
             if (selecting) {
                 "${selected.size} selected — merge combines distance, time, and economy"
             } else {
-                "Auto-tracked rides. Long-press to select and merge trips."
+                "Auto-tracked rides with place labels. Long-press to select and merge."
             }
         )
 
@@ -147,8 +150,18 @@ private fun RideRow(
         verticalAlignment = Alignment.CenterVertically
     ) {
         Column(modifier = Modifier.weight(1f)) {
-            Text(Formatters.dateTime(ride.startTimeMs), style = MaterialTheme.typography.titleLarge)
+            val title = PlaceNameResolver.displayTitle(ride)
+            Text(
+                title.ifBlank { Formatters.dateTime(ride.startTimeMs) },
+                style = MaterialTheme.typography.titleLarge
+            )
             Spacer(Modifier.height(6.dp))
+            if (title.isNotBlank()) {
+                Text(
+                    Formatters.dateTime(ride.startTimeMs),
+                    style = MaterialTheme.typography.bodyMedium
+                )
+            }
             Text(
                 "${Formatters.km(ride.distanceKm)} · ${Formatters.durationHoursMinutes(ride.durationMs)} · ${Formatters.kmL(ride.approxKmPerLitre)}",
                 style = MaterialTheme.typography.bodyMedium
@@ -172,9 +185,26 @@ private fun RideRow(
 }
 
 @Composable
-fun RideDetailScreen(ride: RideEntity?, onBack: () -> Unit) {
+fun RideDetailScreen(
+    ride: RideEntity?,
+    onBack: () -> Unit,
+    onSaveLabel: (Long, String) -> Unit = { _, _ -> },
+    onEnrichPlaces: (Long) -> Unit = {}
+) {
     val context = LocalContext.current
     var sameLocationDialog by remember { mutableStateOf(false) }
+    var labelDraft by remember(ride?.id, ride?.label) {
+        mutableStateOf(ride?.label.orEmpty())
+    }
+
+    LaunchedEffect(ride?.id) {
+        val r = ride ?: return@LaunchedEffect
+        if ((r.startPlaceName.isNullOrBlank() && r.startLat != null) ||
+            (r.endPlaceName.isNullOrBlank() && r.endLat != null)
+        ) {
+            onEnrichPlaces(r.id)
+        }
+    }
 
     Column(
         modifier = Modifier
@@ -194,6 +224,37 @@ fun RideDetailScreen(ride: RideEntity?, onBack: () -> Unit) {
             return
         }
 
+        val autoTitle = PlaceNameResolver.displayTitle(ride.copy(label = ""))
+        Text(
+            PlaceNameResolver.displayTitle(ride).ifBlank { Formatters.dateTime(ride.startTimeMs) },
+            style = MaterialTheme.typography.titleLarge
+        )
+        Spacer(Modifier.height(12.dp))
+
+        OutlinedTextField(
+            value = labelDraft,
+            onValueChange = { labelDraft = it.take(48) },
+            label = { Text("Trip label") },
+            supportingText = {
+                Text(
+                    if (autoTitle.isNotBlank()) {
+                        "Leave blank to use: $autoTitle"
+                    } else {
+                        "Optional name for this trip"
+                    }
+                )
+            },
+            singleLine = true,
+            modifier = Modifier.fillMaxWidth()
+        )
+        Spacer(Modifier.height(8.dp))
+        OutlinedButton(
+            onClick = { onSaveLabel(ride.id, labelDraft) },
+            enabled = labelDraft.trim() != ride.label.trim(),
+            modifier = Modifier.fillMaxWidth()
+        ) { Text("Save label") }
+
+        Spacer(Modifier.height(16.dp))
         Row(
             modifier = Modifier.fillMaxWidth(),
             horizontalArrangement = Arrangement.SpaceBetween
@@ -225,7 +286,7 @@ fun RideDetailScreen(ride: RideEntity?, onBack: () -> Unit) {
         Spacer(Modifier.height(8.dp))
 
         LocationButton(
-            label = "Start location",
+            label = ride.startPlaceName?.takeIf { it.isNotBlank() } ?: "Start location",
             lat = ride.startLat,
             lng = ride.startLng
         ) {
@@ -241,7 +302,7 @@ fun RideDetailScreen(ride: RideEntity?, onBack: () -> Unit) {
         }
         Spacer(Modifier.height(8.dp))
         LocationButton(
-            label = "End / parked location",
+            label = ride.endPlaceName?.takeIf { it.isNotBlank() } ?: "End / parked location",
             lat = ride.endLat,
             lng = ride.endLng
         ) {

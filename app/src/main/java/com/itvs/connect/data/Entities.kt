@@ -25,7 +25,13 @@ data class RideEntity(
     val endLat: Double?,
     val endLng: Double?,
     val routeJson: String,
-    val notes: String = ""
+    val notes: String = "",
+    /** Optional user-defined trip name. Empty → auto title from place names. */
+    val label: String = "",
+    /** Reverse-geocoded start place (Android Geocoder). */
+    val startPlaceName: String? = null,
+    /** Reverse-geocoded end / parked place (Android Geocoder). */
+    val endPlaceName: String? = null
 )
 
 @Entity(tableName = "parked_locations")

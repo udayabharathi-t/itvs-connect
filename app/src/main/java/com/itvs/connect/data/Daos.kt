@@ -23,6 +23,22 @@ interface RideDao {
     @Insert(onConflict = OnConflictStrategy.REPLACE)
     suspend fun insert(ride: RideEntity): Long
 
+    @Query(
+        """
+        UPDATE rides
+        SET startPlaceName = :startPlaceName,
+            endPlaceName = :endPlaceName
+        WHERE id = :id
+        """
+    )
+    suspend fun updatePlaceNames(id: Long, startPlaceName: String?, endPlaceName: String?)
+
+    @Query("UPDATE rides SET label = :label WHERE id = :id")
+    suspend fun updateLabel(id: Long, label: String)
+
+    @Query("UPDATE rides SET notes = :notes WHERE id = :id")
+    suspend fun updateNotes(id: Long, notes: String)
+
     @Query("DELETE FROM rides WHERE id = :id")
     suspend fun delete(id: Long)
 

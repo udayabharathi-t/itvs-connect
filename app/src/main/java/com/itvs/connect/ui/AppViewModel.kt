@@ -143,6 +143,17 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
         }
     }
 
+    fun updateRideLabel(id: Long, label: String) {
+        viewModelScope.launch { db.rideDao().updateLabel(id, label.trim()) }
+    }
+
+    fun enrichRidePlaceNames(id: Long) {
+        viewModelScope.launch {
+            boundTracker?.enrichPlaceNames(id)
+                ?: RideTracker(getApplication(), db, prefs).enrichPlaceNames(id)
+        }
+    }
+
     fun ride(id: Long): StateFlow<RideEntity?> =
         db.rideDao().observeById(id).stateIn(viewModelScope, SharingStarted.Eagerly, null)
 
