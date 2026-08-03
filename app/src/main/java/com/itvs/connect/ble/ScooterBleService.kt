@@ -168,6 +168,7 @@ class ScooterBleService : Service() {
     fun manager(): ScooterBleManager = ble
     fun tracker(): RideTracker = rideTracker
 
+    @Suppress("UNUSED_PARAMETER")
     private fun maybeStartAutoReconnect(reason: String) {
         if (userDisconnected) return
         if (!settings.autoConnect) return
