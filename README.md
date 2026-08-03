@@ -30,15 +30,21 @@ Built from the reverse-engineering work documented in
 4. Rides shorter than ~50 m and under 60 s are discarded as ignition blips.
 5. Everything is stored in a local Room database.
 
+## Install (phone)
+
+Prefer the **release** APK from [GitHub Releases](https://github.com/udayabharathi-t/itvs-connect/releases).  
+If Play Protect blocks it, follow [`docs/INSTALL.md`](docs/INSTALL.md) (disable scan temporarily or tap **Install anyway**).
+
 ## Build
 
 ```bash
-./gradlew :app:assembleDebug :app:testDebugUnitTest
+./gradlew :app:assembleRelease :app:testDebugUnitTest
 ```
 
 Requirements: Android SDK 34, JDK 17+, a TVS SmartXonnect scooter for on-device testing.
 
-Install the debug APK from `app/build/outputs/apk/debug/`.
+- Release APK: `app/build/outputs/apk/release/app-release.apk`
+- Debug APK: `app/build/outputs/apk/debug/` (may be more aggressively flagged by Play Protect)
 
 ## Permissions
 
