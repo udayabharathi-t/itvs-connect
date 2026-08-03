@@ -8,6 +8,7 @@ enum class ButtonAction(val displayName: String) {
     VOLUME_DOWN("Volume Down"),
     GOOGLE_ASSISTANT("Google Assistant"),
     SPEED_DIAL("Speed Dial"),
+    ROTATE_RIDE_STATS("Rotate ride stats"),
     DO_NOTHING("Do Nothing");
 
     companion object {

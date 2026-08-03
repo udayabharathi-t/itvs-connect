@@ -120,5 +120,5 @@ object PacketBuilder {
     }
 
     fun sanitizeClusterText(input: String): String =
-        input.replace(Regex("[^A-Za-z0-9 .]"), "").take(17)
+        input.replace(Regex("[^A-Za-z0-9 .:/]"), "").take(17)
 }
