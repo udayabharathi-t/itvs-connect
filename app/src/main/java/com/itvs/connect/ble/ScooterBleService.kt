@@ -86,6 +86,7 @@ class ScooterBleService : Service() {
             provider = {
                 ClusterStatsRotator.fromLive(
                     ride = rideTracker.activeRide.value,
+                    liveAfe = ble.averageFuelEconomy.value,
                     maps = MapsNavigationStore.snapshot
                 )
             }
@@ -280,6 +281,10 @@ class ScooterBleService : Service() {
                         tankCapacityLitres = s.tankCapacityLitres
                     )
                     notify(getString(R.string.ride_notification_title))
+                    // Auto-start continuous stats HUD when a gesture is mapped to it.
+                    if (isRideStatsMapped() && !statsRotator.isRunning) {
+                        statsRotator.start(resetIndex = true)
+                    }
                 } else if (rideTracker.isActive()) {
                     // Soft end: grace period in case of brief telemetry gaps while still connected.
                     // Hard disconnect path above ends immediately.
@@ -290,6 +295,7 @@ class ScooterBleService : Service() {
                             if (!ble.isTelemetryActive.value && rideTracker.isActive()) {
                                 rideTracker.endRideIfNeeded()
                                 releaseWakeLock()
+                                statsRotator.stop()
                                 notify(getString(R.string.service_notification_title))
                             }
                         }
@@ -380,13 +386,10 @@ class ScooterBleService : Service() {
             else -> ButtonAction.DO_NOTHING
         }
         if (action == ButtonAction.ROTATE_RIDE_STATS) {
-            if (statsRotator.isRunning) {
-                statsRotator.stop()
-                flashCluster("Stats stopped")
-            } else {
-                // Starts immediately with Ride time, then advances every 10s.
-                statsRotator.start()
-            }
+            // Each press advances the page; continuous refresh keeps Assist ready away.
+            val label = statsRotator.nextPage()
+            // Brief confirmation is unnecessary — nextPage already flashes the new stat.
+            notify("Stats · $label")
             return
         }
         val dial = when {
@@ -399,6 +402,16 @@ class ScooterBleService : Service() {
         if (action != ButtonAction.DO_NOTHING && action.displayName.isNotBlank()) {
             flashCluster(action.displayName.take(17))
         }
+    }
+
+    private fun isRideStatsMapped(): Boolean {
+        return settings.singlePress == ButtonAction.ROTATE_RIDE_STATS ||
+            settings.doublePress == ButtonAction.ROTATE_RIDE_STATS ||
+            settings.triplePress == ButtonAction.ROTATE_RIDE_STATS ||
+            settings.longPress == ButtonAction.ROTATE_RIDE_STATS ||
+            settings.singleLongPress == ButtonAction.ROTATE_RIDE_STATS ||
+            settings.doubleLongPress == ButtonAction.ROTATE_RIDE_STATS ||
+            settings.tripleLongPress == ButtonAction.ROTATE_RIDE_STATS
     }
 
     private fun matchesCallGesture(gesture: CallGesture, count: Int, isLong: Boolean): Boolean {
