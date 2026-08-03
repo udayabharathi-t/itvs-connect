@@ -10,23 +10,25 @@ import org.junit.Test
 class ClusterStatsRotatorTest {
 
     @Test
-    fun pagesIncludeRideMapsAndNa() {
+    fun pagesExcludeLiveMileage() {
         val pages = ClusterStatsRotator.pages(
             ClusterStatsRotator.StatsSnapshot(
                 rideDurationMs = 90 * 60_000L,
-                liveMileageKmL = 48,
                 avgMileageKmL = 45.5,
                 mapsEta = "N/A",
                 mapsDistance = "N/A"
             )
         )
-        assertThat(pages).hasSize(5)
-        assertThat(pages[0].first).isEqualTo("Ride time:")
+        assertThat(pages).hasSize(4)
+        assertThat(pages.map { it.first }).containsExactly(
+            "Ride time:",
+            "Avg mileage:",
+            "Maps ETA:",
+            "Distance left:"
+        ).inOrder()
+        assertThat(pages.none { it.first.contains("Live", ignoreCase = true) }).isTrue()
         assertThat(pages[0].second).isEqualTo("1h 30m")
-        assertThat(pages[1]).isEqualTo("Live mileage:" to "48 km/L")
-        assertThat(pages[2]).isEqualTo("Avg mileage:" to "45.5 km/L")
-        assertThat(pages[3]).isEqualTo("Maps ETA:" to "N/A")
-        assertThat(pages[4]).isEqualTo("Distance left:" to "N/A")
+        assertThat(pages[1].second).isEqualTo("45.5 km/L")
     }
 
     @Test
@@ -39,6 +41,13 @@ class ClusterStatsRotatorTest {
     fun mapsParserExtractsEtaAndDistance() {
         val snap = MapsNavParser.parse("Turn left onto Mount Road", "15 min · 4.2 km")
         assertThat(snap.etaText).isEqualTo("15m")
+        assertThat(snap.remainingDistanceText).isEqualTo("4.2 km")
+    }
+
+    @Test
+    fun mapsParserParsesClassicNavTimeLine() {
+        val snap = MapsNavParser.parse("15 min · 4.2 km · 4:32 PM")
+        assertThat(snap.etaText).isEqualTo("4:32 PM")
         assertThat(snap.remainingDistanceText).isEqualTo("4.2 km")
     }
 

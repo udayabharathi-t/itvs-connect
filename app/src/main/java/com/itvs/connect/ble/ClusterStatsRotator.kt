@@ -9,14 +9,18 @@ import kotlinx.coroutines.isActive
 import kotlinx.coroutines.launch
 
 /**
- * Cycles ride / Maps stats onto the cluster message rows every [intervalMs].
- * Toggle on/off via the mapped Voice-button action.
+ * Cycles ride / Maps stats onto the cluster message rows.
+ *
+ * Advances page every [intervalMs]. Re-sends the current page every [refreshMs]
+ * so the cluster does not fall back to Assist ready / native economy between ticks.
  */
 class ClusterStatsRotator(
     private val scope: CoroutineScope,
     private val intervalMs: Long = INTERVAL_MS,
+    private val refreshMs: Long = REFRESH_MS,
     private val flash: (row1: String, row2: String) -> Unit,
-    private val provider: () -> StatsSnapshot
+    private val provider: () -> StatsSnapshot,
+    private val onTick: (() -> Unit)? = null
 ) {
     private var job: Job? = null
     private var index = 0
@@ -37,13 +41,18 @@ class ClusterStatsRotator(
         stop()
         index = 0
         job = scope.launch {
+            var elapsedOnPage = 0L
             while (isActive) {
-                val page = pages(provider()).getOrElse(index % PAGE_COUNT) {
-                    "Stats" to "N/A"
-                }
+                onTick?.invoke()
+                val pages = pages(provider())
+                val page = pages.getOrElse(index % pages.size) { "Stats" to "N/A" }
                 flash(page.first, page.second)
-                index = (index + 1) % PAGE_COUNT
-                delay(intervalMs)
+                delay(refreshMs)
+                elapsedOnPage += refreshMs
+                if (elapsedOnPage >= intervalMs) {
+                    elapsedOnPage = 0L
+                    index = (index + 1) % pages.size.coerceAtLeast(1)
+                }
             }
         }
     }
@@ -56,7 +65,6 @@ class ClusterStatsRotator(
 
     data class StatsSnapshot(
         val rideDurationMs: Long?,
-        val liveMileageKmL: Int?,
         val avgMileageKmL: Double?,
         val mapsEta: String,
         val mapsDistance: String
@@ -64,15 +72,15 @@ class ClusterStatsRotator(
 
     companion object {
         const val INTERVAL_MS = 10_000L
-        const val PAGE_COUNT = 5
+        /** Keep rewriting the cluster so Assist ready / native economy do not return. */
+        const val REFRESH_MS = 2_500L
+        const val PAGE_COUNT = 4
 
         fun pages(s: StatsSnapshot): List<Pair<String, String>> {
             val rideTime = s.rideDurationMs?.let { Formatters.durationHoursMinutes(it) } ?: "N/A"
-            val live = s.liveMileageKmL?.takeIf { it in 1..99 }?.let { "$it km/L" } ?: "N/A"
             val avg = s.avgMileageKmL?.takeIf { it > 0 }?.let { "%.1f km/L".format(it) } ?: "N/A"
             return listOf(
                 "Ride time:" to rideTime,
-                "Live mileage:" to live,
                 "Avg mileage:" to avg,
                 "Maps ETA:" to s.mapsEta,
                 "Distance left:" to s.mapsDistance
@@ -81,14 +89,12 @@ class ClusterStatsRotator(
 
         fun fromLive(
             ride: RideTracker.ActiveRideUi?,
-            liveAfe: Int,
             maps: MapsNavSnapshot
         ): StatsSnapshot {
             val avg = ride?.avgAfe
                 ?: ride?.afe?.takeIf { it in 1..99 }?.toDouble()
             return StatsSnapshot(
                 rideDurationMs = ride?.durationMs,
-                liveMileageKmL = liveAfe.takeIf { it in 1..99 } ?: ride?.afe,
                 avgMileageKmL = avg,
                 mapsEta = maps.etaOrNa(),
                 mapsDistance = maps.distanceOrNa()

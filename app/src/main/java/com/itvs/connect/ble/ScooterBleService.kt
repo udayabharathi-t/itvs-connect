@@ -81,7 +81,6 @@ class ScooterBleService : Service() {
             provider = {
                 ClusterStatsRotator.fromLive(
                     ride = rideTracker.activeRide.value,
-                    liveAfe = ble.averageFuelEconomy.value,
                     maps = MapsNavigationStore.snapshot
                 )
             }
