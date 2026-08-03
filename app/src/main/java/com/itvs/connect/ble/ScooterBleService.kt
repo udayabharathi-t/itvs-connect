@@ -150,6 +150,17 @@ class ScooterBleService : Service() {
                     is ConnectionState.Failed -> state.reason.take(80).ifBlank { "Pairing issue" }
                 }
                 notify(text)
+
+                // Disconnect should immediately finalize the in-progress ride.
+                if (state is ConnectionState.Disconnected || state is ConnectionState.Failed) {
+                    if (rideTracker.isActive()) {
+                        rideEndJob?.cancel()
+                        rideEndJob = null
+                        rideTracker.endRideIfNeeded()
+                        releaseWakeLock()
+                        notify("Ride saved · disconnected")
+                    }
+                }
             }
         }
         scope.launch {
@@ -167,13 +178,18 @@ class ScooterBleService : Service() {
                     )
                     notify(getString(R.string.ride_notification_title))
                 } else if (rideTracker.isActive()) {
-                    rideTracker.captureParkedLocation(isManual = false)
-                    rideEndJob?.cancel()
-                    rideEndJob = scope.launch {
-                        delay(BleConstants.RIDE_END_GRACE_MS)
-                        rideTracker.endRideIfNeeded()
-                        releaseWakeLock()
-                        notify(getString(R.string.service_notification_title))
+                    // Soft end: grace period in case of brief telemetry gaps while still connected.
+                    // Hard disconnect path above ends immediately.
+                    if (ble.connectionState.value is ConnectionState.Connected) {
+                        rideEndJob?.cancel()
+                        rideEndJob = scope.launch {
+                            delay(BleConstants.RIDE_END_GRACE_MS)
+                            if (!ble.isTelemetryActive.value && rideTracker.isActive()) {
+                                rideTracker.endRideIfNeeded()
+                                releaseWakeLock()
+                                notify(getString(R.string.service_notification_title))
+                            }
+                        }
                     }
                 }
             }

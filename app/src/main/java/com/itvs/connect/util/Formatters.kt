@@ -20,9 +20,27 @@ object Formatters {
         return if (h > 0) "%d:%02d:%02d".format(h, m, s) else "%02d:%02d".format(m, s)
     }
 
+    /** Human duration focused on hours + minutes (as requested for ride details). */
+    fun durationHoursMinutes(ms: Long): String {
+        val totalMin = TimeUnit.MILLISECONDS.toMinutes(ms).coerceAtLeast(0)
+        val h = totalMin / 60
+        val m = totalMin % 60
+        return when {
+            h > 0 && m > 0 -> "%dh %dm".format(h, m)
+            h > 0 -> "%dh".format(h)
+            else -> "%dm".format(m)
+        }
+    }
+
     fun km(value: Double): String = "%.1f km".format(value)
     fun kmL(value: Double?): String =
         if (value == null || value <= 0) "—" else "%.1f km/L".format(value)
 
+    fun litres(value: Double?): String =
+        if (value == null || value <= 0) "—" else "%.2f L".format(value)
+
     fun speed(value: Double): String = "%.0f km/h".format(value)
+
+    fun latLng(lat: Double?, lng: Double?): String =
+        if (lat == null || lng == null) "—" else "%.5f, %.5f".format(lat, lng)
 }

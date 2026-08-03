@@ -192,7 +192,8 @@ private fun AppRoot(vm: AppViewModel) {
                 RidesScreen(
                     rides = rides,
                     onOpen = { id -> nav.navigate("ride/$id") },
-                    onDelete = vm::deleteRide
+                    onDelete = vm::deleteRide,
+                    onMerge = vm::mergeRides
                 )
             }
             composable(

@@ -10,6 +10,7 @@ import com.itvs.connect.data.AppDatabase
 import com.itvs.connect.data.AppSettings
 import com.itvs.connect.data.PreferencesRepository
 import com.itvs.connect.data.RideEntity
+import com.itvs.connect.data.RideStatsCalculator
 import com.itvs.connect.data.RideTracker
 import com.itvs.connect.data.SavedPlaceEntity
 import kotlinx.coroutines.flow.SharingStarted
@@ -46,7 +47,7 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
 
     val settings = prefs.settings.stateIn(viewModelScope, SharingStarted.Eagerly, AppSettings())
     val rides = db.rideDao().observeAll().stateIn(viewModelScope, SharingStarted.Eagerly, emptyList())
-    val parked = db.parkedLocationDao().observeRecent()
+    val parked = db.parkedLocationDao().observeRecent(1)
         .stateIn(viewModelScope, SharingStarted.Eagerly, emptyList())
     val places = db.savedPlaceDao().observeAll()
         .stateIn(viewModelScope, SharingStarted.Eagerly, emptyList())
@@ -130,6 +131,16 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
 
     fun deleteRide(id: Long) {
         viewModelScope.launch { db.rideDao().delete(id) }
+    }
+
+    fun mergeRides(ids: List<Long>) {
+        viewModelScope.launch {
+            val rides = db.rideDao().getByIds(ids)
+            if (rides.size < 2) return@launch
+            val merged = RideStatsCalculator.mergeRides(rides)
+            db.rideDao().insert(merged)
+            db.rideDao().deleteIds(rides.map { it.id })
+        }
     }
 
     fun ride(id: Long): StateFlow<RideEntity?> =

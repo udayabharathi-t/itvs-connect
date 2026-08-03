@@ -397,7 +397,10 @@ class ScooterBleManager(private val context: Context) {
                     cccd.value = BluetoothGattDescriptor.ENABLE_NOTIFICATION_VALUE
                     gatt.writeDescriptor(cccd)
                 }
-                _statusMessage.value = "Waiting for scooter auth challenge…"
+                // Mark Connected as soon as the SmartXonnect GATT link is ready.
+                // Auth/challenge may arrive later (or never on some units); don't leave UI stuck.
+                markConnected(gatt.device)
+                _statusMessage.value = "Connected — syncing with cluster…"
                 startHeartbeat()
                 startWatchdog()
             }
@@ -467,7 +470,13 @@ class ScooterBleManager(private val context: Context) {
             _isTelemetryActive.value = true
         }
 
+        // Also promote to Connected on first valid telemetry packet.
         val snapshot = TelemetryParser.parse(data) ?: return
+        if (_connectionState.value is ConnectionState.Authenticating ||
+            _connectionState.value is ConnectionState.Connecting
+        ) {
+            markConnected(gatt?.device)
+        }
         if (snapshot.isIgnitionTelemetry) {
             hasSeenNormalCycle = true
             _isTelemetryActive.value = true
@@ -489,11 +498,14 @@ class ScooterBleManager(private val context: Context) {
     }
 
     private suspend fun handleAuth(challenge: ByteArray) {
-        _connectionState.value = ConnectionState.Authenticating
+        if (_connectionState.value !is ConnectionState.Connected) {
+            _connectionState.value = ConnectionState.Authenticating
+        }
         _statusMessage.value = "Authenticating with scooter…"
         val ok = safeWrite(PacketBuilder.buildAuthResponsePacket(challenge))
         if (!ok) {
-            fail("Auth write failed. Retry pairing near the scooter.")
+            // Stay connected if GATT is still up; auth can retry on next challenge.
+            _statusMessage.value = "Auth write failed — still connected, retrying via heartbeat"
             return
         }
         delay(BleConstants.POST_AUTH_DELAY_MS)
@@ -501,14 +513,17 @@ class ScooterBleManager(private val context: Context) {
         delay(BleConstants.POST_AUTH_DELAY_MS)
         safeWrite(PacketBuilder.buildRiderNamePacket(riderName))
         delay(BleConstants.POST_AUTH_DELAY_MS)
-        val device = gatt?.device
-        expectingPairing = false
+        markConnected(gatt?.device)
         _statusMessage.value = "Paired"
+        startHeartbeat()
+    }
+
+    private fun markConnected(device: BluetoothDevice?) {
+        expectingPairing = false
         _connectionState.value = ConnectionState.Connected(
             deviceName = device?.name ?: "TVS Scooter",
             mac = device?.address.orEmpty()
         )
-        startHeartbeat()
     }
 
     private fun startHeartbeat() {

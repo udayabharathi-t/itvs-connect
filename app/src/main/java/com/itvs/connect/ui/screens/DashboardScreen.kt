@@ -93,7 +93,15 @@ fun DashboardScreen(
                 Spacer(Modifier.height(10.dp))
                 MetricRow {
                     MetricTile("Speed", Formatters.speed(ride.currentSpeedKmh), Modifier.weight(1f))
-                    MetricTile("Cluster AFE", "${ride.afe ?: "—"} km/L", Modifier.weight(1f))
+                    MetricTile(
+                        "Avg km/L",
+                        when {
+                            ride.avgAfe != null -> "%.1f".format(ride.avgAfe)
+                            ride.afe != null -> "${ride.afe}"
+                            else -> "—"
+                        } + " km/L",
+                        Modifier.weight(1f)
+                    )
                 }
             }
             Spacer(Modifier.height(16.dp))

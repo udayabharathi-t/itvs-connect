@@ -119,19 +119,25 @@ fun MoreScreen(
         ) { Text("Disable battery optimizations") }
 
         Spacer(Modifier.height(24.dp))
-        Text("Parked locations", style = MaterialTheme.typography.titleLarge)
+        Text("Last parked", style = MaterialTheme.typography.titleLarge)
         Spacer(Modifier.height(8.dp))
         if (parked.isEmpty()) {
-            Text("No parked pins yet.", style = MaterialTheme.typography.bodyMedium)
+            Text("No parked pin yet.", style = MaterialTheme.typography.bodyMedium)
         } else {
-            parked.take(20).forEach { loc ->
-                Column(
-                    modifier = Modifier
-                        .fillMaxWidth()
-                        .padding(vertical = 6.dp)
-                        .background(MaterialTheme.colorScheme.surface, RoundedCornerShape(12.dp))
-                        .padding(12.dp)
-                ) {
+            val loc = parked.first()
+            OutlinedButton(
+                onClick = {
+                    val uri = Uri.parse(
+                        "geo:${loc.latitude},${loc.longitude}?q=${loc.latitude},${loc.longitude}(Last parked)"
+                    )
+                    val maps = Intent(Intent.ACTION_VIEW, uri).setPackage("com.google.android.apps.maps")
+                    runCatching { context.startActivity(maps) }.onFailure {
+                        context.startActivity(Intent(Intent.ACTION_VIEW, uri))
+                    }
+                },
+                modifier = Modifier.fillMaxWidth()
+            ) {
+                Column(modifier = Modifier.fillMaxWidth()) {
                     Text(Formatters.dateTime(loc.timestampMs), style = MaterialTheme.typography.bodyLarge)
                     Text(
                         "%.5f, %.5f%s".format(
@@ -141,15 +147,7 @@ fun MoreScreen(
                         ),
                         style = MaterialTheme.typography.bodyMedium
                     )
-                    OutlinedButton(
-                        onClick = {
-                            val uri = Uri.parse(
-                                "geo:${loc.latitude},${loc.longitude}?q=${loc.latitude},${loc.longitude}"
-                            )
-                            context.startActivity(Intent(Intent.ACTION_VIEW, uri))
-                        },
-                        modifier = Modifier.padding(top = 6.dp)
-                    ) { Text("Open in maps") }
+                    Text("Tap to open in Google Maps", style = MaterialTheme.typography.labelLarge)
                 }
             }
         }
