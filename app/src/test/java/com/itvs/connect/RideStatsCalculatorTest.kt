@@ -100,4 +100,14 @@ class RideStatsCalculatorTest {
         assertThat(merged.endTimeMs).isEqualTo(240_000)
         assertThat(merged.notes).contains("Merged")
     }
+
+    @Test
+    fun sameLocationWithinThreshold() {
+        assertThat(
+            RideStatsCalculator.sameLocation(13.0, 80.0, 13.0001, 80.0001)
+        ).isTrue()
+        assertThat(
+            RideStatsCalculator.sameLocation(13.0, 80.0, 13.01, 80.01)
+        ).isFalse()
+    }
 }

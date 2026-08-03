@@ -51,9 +51,12 @@ class ScooterBleManager(private val context: Context) {
     private var findMeJob: Job? = null
     private var watchdogJob: Job? = null
     private var scanTimeoutJob: Job? = null
+    private var connectTimeoutJob: Job? = null
     private var scanCallback: ScanCallback? = null
     private var expectingPairing = false
     private var connectAttemptMac: String? = null
+    /** True once SmartXonnect GATT chars are ready — never flip UI back to Authenticating. */
+    private var gattLinkReady = false
 
     private var lastRxAt = 0L
     private var lastPacketAt = 0L
@@ -225,6 +228,8 @@ class ScooterBleManager(private val context: Context) {
 
     fun connect(device: BluetoothDevice, autoConnect: Boolean = false) {
         stopScan()
+        connectTimeoutJob?.cancel()
+        gattLinkReady = false
         connectAttemptMac = device.address
         _connectionState.value = ConnectionState.Connecting
         _statusMessage.value = "Connecting to ${device.name ?: device.address}…"
@@ -233,6 +238,20 @@ class ScooterBleManager(private val context: Context) {
         writeChar = null
         readChar = null
         gatt = device.connectGatt(context, autoConnect, gattCallback, BluetoothDevice.TRANSPORT_LE)
+        // Don't leave the UI stuck on Connecting / Authenticating if discovery hangs.
+        connectTimeoutJob = scope.launch {
+            delay(CONNECT_READY_TIMEOUT_MS)
+            val state = _connectionState.value
+            if (state is ConnectionState.Connecting || state is ConnectionState.Authenticating) {
+                if (gattLinkReady || (writeChar != null && readChar != null)) {
+                    markConnected(gatt?.device)
+                    _statusMessage.value = "Connected — syncing with cluster…"
+                } else {
+                    fail("Connection timed out. Retry scan / force-stop TVS Connect, then try again.")
+                    runCatching { gatt?.disconnect() }
+                }
+            }
+        }
     }
 
     fun connectMac(mac: String, autoConnect: Boolean = false) {
@@ -250,6 +269,9 @@ class ScooterBleManager(private val context: Context) {
         heartbeatJob?.cancel()
         findMeJob?.cancel()
         watchdogJob?.cancel()
+        connectTimeoutJob?.cancel()
+        connectTimeoutJob = null
+        gattLinkReady = false
         gatt?.disconnect()
         gatt?.close()
         gatt = null
@@ -343,6 +365,8 @@ class ScooterBleManager(private val context: Context) {
                 heartbeatJob?.cancel()
                 findMeJob?.cancel()
                 watchdogJob?.cancel()
+                connectTimeoutJob?.cancel()
+                gattLinkReady = false
                 hasSeenNormalCycle = false
                 _isTelemetryActive.value = false
                 writeChar = null
@@ -498,13 +522,20 @@ class ScooterBleManager(private val context: Context) {
     }
 
     private suspend fun handleAuth(challenge: ByteArray) {
-        if (_connectionState.value !is ConnectionState.Connected) {
+        // Never regress UI to Authenticating once the GATT link is usable.
+        if (!gattLinkReady && _connectionState.value !is ConnectionState.Connected) {
             _connectionState.value = ConnectionState.Authenticating
         }
-        _statusMessage.value = "Authenticating with scooter…"
+        _statusMessage.value =
+            if (gattLinkReady || _connectionState.value is ConnectionState.Connected) {
+                "Syncing with cluster…"
+            } else {
+                "Authenticating with scooter…"
+            }
         val ok = safeWrite(PacketBuilder.buildAuthResponsePacket(challenge))
         if (!ok) {
             // Stay connected if GATT is still up; auth can retry on next challenge.
+            if (gattLinkReady) markConnected(gatt?.device)
             _statusMessage.value = "Auth write failed — still connected, retrying via heartbeat"
             return
         }
@@ -520,6 +551,9 @@ class ScooterBleManager(private val context: Context) {
 
     private fun markConnected(device: BluetoothDevice?) {
         expectingPairing = false
+        gattLinkReady = true
+        connectTimeoutJob?.cancel()
+        connectTimeoutJob = null
         _connectionState.value = ConnectionState.Connected(
             deviceName = device?.name ?: "TVS Scooter",
             mac = device?.address.orEmpty()
@@ -583,6 +617,8 @@ class ScooterBleManager(private val context: Context) {
     companion object {
         private const val TAG = "ScooterBleManager"
         private const val SCAN_TIMEOUT_MS = 25_000L
+        /** Max time to sit on Connecting/Authenticating before promoting or failing. */
+        private const val CONNECT_READY_TIMEOUT_MS = 12_000L
         private val SCOOTER_NAME_HINTS = listOf(
             "tvs", "jupiter", "ntorq", "ronin", "apache", "iqube",
             "smartx", "xonnect", "radeon", "sport", "rr310"

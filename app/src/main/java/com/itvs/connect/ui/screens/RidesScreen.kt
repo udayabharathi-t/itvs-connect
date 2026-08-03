@@ -228,37 +228,32 @@ fun RideDetailScreen(ride: RideEntity?, onBack: () -> Unit) {
             label = "Start location",
             lat = ride.startLat,
             lng = ride.startLng
-        ) { lat, lng ->
-            openMapsPin(context, lat, lng, "Ride start")
+        ) {
+            openStartEndMaps(
+                context = context,
+                startLat = ride.startLat,
+                startLng = ride.startLng,
+                endLat = ride.endLat,
+                endLng = ride.endLng,
+                fallbackLabel = "Ride start",
+                onSameLocation = { sameLocationDialog = true }
+            )
         }
         Spacer(Modifier.height(8.dp))
         LocationButton(
             label = "End / parked location",
             lat = ride.endLat,
             lng = ride.endLng
-        ) { lat, lng ->
-            if (RideStatsCalculator.sameLocation(ride.startLat, ride.startLng, lat, lng)) {
-                sameLocationDialog = true
-            } else {
-                openMapsPin(context, lat, lng, "Ride end")
-            }
-        }
-
-        if (ride.startLat != null && ride.startLng != null &&
-            ride.endLat != null && ride.endLng != null &&
-            !RideStatsCalculator.sameLocation(ride.startLat, ride.startLng, ride.endLat, ride.endLng)
         ) {
-            Spacer(Modifier.height(8.dp))
-            OutlinedButton(
-                onClick = {
-                    openMapsDirections(
-                        context,
-                        ride.startLat, ride.startLng,
-                        ride.endLat, ride.endLng
-                    )
-                },
-                modifier = Modifier.fillMaxWidth()
-            ) { Text("Open start → end in Maps") }
+            openStartEndMaps(
+                context = context,
+                startLat = ride.startLat,
+                startLng = ride.startLng,
+                endLat = ride.endLat,
+                endLng = ride.endLng,
+                fallbackLabel = "Ride end",
+                onSameLocation = { sameLocationDialog = true }
+            )
         }
 
         if (sameLocationDialog) {
@@ -281,12 +276,10 @@ private fun LocationButton(
     label: String,
     lat: Double?,
     lng: Double?,
-    onOpen: (Double, Double) -> Unit
+    onOpen: () -> Unit
 ) {
     OutlinedButton(
-        onClick = {
-            if (lat != null && lng != null) onOpen(lat, lng)
-        },
+        onClick = onOpen,
         enabled = lat != null && lng != null,
         modifier = Modifier.fillMaxWidth()
     ) {
@@ -307,6 +300,35 @@ private fun DetailLine(label: String, value: String) {
     ) {
         Text(label, style = MaterialTheme.typography.bodyMedium)
         Text(value, style = MaterialTheme.typography.bodyLarge)
+    }
+}
+
+/**
+ * Opens Maps for start→end when both pins exist.
+ * Same coordinates → caller shows a dialog instead of redirecting.
+ * Only one pin → drop a single marker.
+ */
+private fun openStartEndMaps(
+    context: android.content.Context,
+    startLat: Double?,
+    startLng: Double?,
+    endLat: Double?,
+    endLng: Double?,
+    fallbackLabel: String,
+    onSameLocation: () -> Unit
+) {
+    val hasStart = startLat != null && startLng != null
+    val hasEnd = endLat != null && endLng != null
+    when {
+        hasStart && hasEnd -> {
+            if (RideStatsCalculator.sameLocation(startLat, startLng, endLat, endLng)) {
+                onSameLocation()
+            } else {
+                openMapsDirections(context, startLat!!, startLng!!, endLat!!, endLng!!)
+            }
+        }
+        hasEnd -> openMapsPin(context, endLat!!, endLng!!, fallbackLabel)
+        hasStart -> openMapsPin(context, startLat!!, startLng!!, fallbackLabel)
     }
 }
 
