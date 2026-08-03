@@ -31,10 +31,18 @@ enum class CallGesture(val displayName: String) {
 
 data class ButtonPressEvent(val durationMs: Long)
 
+data class DiscoveredDevice(
+    val name: String,
+    val mac: String,
+    val rssi: Int,
+    val likelyScooter: Boolean
+)
+
 sealed class ConnectionState {
     data object Disconnected : ConnectionState()
     data object Scanning : ConnectionState()
     data object Connecting : ConnectionState()
     data object Authenticating : ConnectionState()
     data class Connected(val deviceName: String, val mac: String) : ConnectionState()
+    data class Failed(val reason: String) : ConnectionState()
 }

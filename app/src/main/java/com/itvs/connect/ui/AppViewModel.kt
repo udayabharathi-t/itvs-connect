@@ -30,7 +30,9 @@ data class DashboardUi(
     val activeRide: RideTracker.ActiveRideUi? = null,
     val settings: AppSettings = AppSettings(),
     val totalDistanceKm: Double = 0.0,
-    val avgEconomy: Double? = null
+    val avgEconomy: Double? = null,
+    val discovered: List<com.itvs.connect.ble.DiscoveredDevice> = emptyList(),
+    val statusMessage: String = ""
 )
 
 class AppViewModel(app: Application) : AndroidViewModel(app) {
@@ -51,19 +53,23 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
 
     private val _activeRide = kotlinx.coroutines.flow.MutableStateFlow<RideTracker.ActiveRideUi?>(null)
 
-    val dashboard: StateFlow<DashboardUi> = combine(
-        ble.connectionState,
-        ble.fuelLevel,
-        ble.odometer,
-        ble.averageFuelEconomy,
-        ble.distanceToEmpty,
-        ble.serviceReminder,
-        ble.isPinging,
-        ble.isTelemetryActive,
-        _activeRide,
-        prefs.settings,
-        db.rideDao().observeTotalDistance(),
-        db.rideDao().observeAverageEconomy()
+    val dashboard: StateFlow<DashboardUi> = kotlinx.coroutines.flow.combine(
+        listOf(
+            ble.connectionState,
+            ble.fuelLevel,
+            ble.odometer,
+            ble.averageFuelEconomy,
+            ble.distanceToEmpty,
+            ble.serviceReminder,
+            ble.isPinging,
+            ble.isTelemetryActive,
+            _activeRide,
+            prefs.settings,
+            db.rideDao().observeTotalDistance(),
+            db.rideDao().observeAverageEconomy(),
+            ble.discoveredDevices,
+            ble.statusMessage
+        )
     ) { values ->
         DashboardUi(
             connection = values[0] as ConnectionState,
@@ -77,7 +83,9 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
             activeRide = values[8] as RideTracker.ActiveRideUi?,
             settings = values[9] as AppSettings,
             totalDistanceKm = values[10] as Double,
-            avgEconomy = values[11] as Double?
+            avgEconomy = values[11] as Double?,
+            discovered = values[12] as List<com.itvs.connect.ble.DiscoveredDevice>,
+            statusMessage = values[13] as String
         )
     }.stateIn(viewModelScope, SharingStarted.Eagerly, DashboardUi())
 
@@ -94,6 +102,13 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
 
     fun scan() {
         ScooterBleService.start(getApplication(), ScooterBleService.ACTION_START_SCAN)
+    }
+
+    fun connectMac(mac: String) {
+        val intent = android.content.Intent(getApplication(), ScooterBleService::class.java)
+            .setAction(ScooterBleService.ACTION_CONNECT_MAC)
+            .putExtra(ScooterBleService.EXTRA_MAC, mac)
+        getApplication<Application>().startForegroundService(intent)
     }
 
     fun disconnect() {
@@ -139,22 +154,3 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
         }
     }
 }
-
-// Helper overload-friendly combine for many flows
-private inline fun <T1, T2, T3, T4, T5, T6, T7, T8, T9, T10, T11, T12, R> combine(
-    f1: kotlinx.coroutines.flow.Flow<T1>,
-    f2: kotlinx.coroutines.flow.Flow<T2>,
-    f3: kotlinx.coroutines.flow.Flow<T3>,
-    f4: kotlinx.coroutines.flow.Flow<T4>,
-    f5: kotlinx.coroutines.flow.Flow<T5>,
-    f6: kotlinx.coroutines.flow.Flow<T6>,
-    f7: kotlinx.coroutines.flow.Flow<T7>,
-    f8: kotlinx.coroutines.flow.Flow<T8>,
-    f9: kotlinx.coroutines.flow.Flow<T9>,
-    f10: kotlinx.coroutines.flow.Flow<T10>,
-    f11: kotlinx.coroutines.flow.Flow<T11>,
-    f12: kotlinx.coroutines.flow.Flow<T12>,
-    crossinline transform: suspend (Array<Any?>) -> R
-): kotlinx.coroutines.flow.Flow<R> = kotlinx.coroutines.flow.combine(
-    listOf(f1, f2, f3, f4, f5, f6, f7, f8, f9, f10, f11, f12)
-) { arr -> transform(arr) }

@@ -1,6 +1,7 @@
 package com.itvs.connect.ui.screens
 
 import androidx.compose.foundation.background
+import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Spacer
@@ -20,6 +21,7 @@ import androidx.compose.runtime.Composable
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.unit.dp
 import com.itvs.connect.ble.ConnectionState
+import com.itvs.connect.ble.DiscoveredDevice
 import com.itvs.connect.ui.DashboardUi
 import com.itvs.connect.ui.components.MetricRow
 import com.itvs.connect.ui.components.MetricTile
@@ -33,7 +35,8 @@ fun DashboardScreen(
     onScan: () -> Unit,
     onDisconnect: () -> Unit,
     onFindMe: () -> Unit,
-    onDropPin: () -> Unit
+    onDropPin: () -> Unit,
+    onConnectMac: (String) -> Unit
 ) {
     Column(
         modifier = Modifier
@@ -48,17 +51,25 @@ fun DashboardScreen(
             modifier = Modifier.padding(top = 4.dp, bottom = 16.dp)
         )
 
-        val (statusLabel, accent) = when (ui.connection) {
+        val (statusLabel, accent) = when (val c = ui.connection) {
             ConnectionState.Disconnected -> "Disconnected" to false
             ConnectionState.Scanning -> "Scanning…" to true
             ConnectionState.Connecting -> "Connecting…" to true
             ConnectionState.Authenticating -> "Authenticating…" to true
             is ConnectionState.Connected -> {
-                val name = ui.connection.deviceName.ifBlank { "Scooter" }
+                val name = c.deviceName.ifBlank { "Scooter" }
                 "Connected · $name" to true
             }
+            is ConnectionState.Failed -> "Needs attention" to false
         }
         StatusChip(statusLabel, accent = accent)
+        if (ui.statusMessage.isNotBlank()) {
+            Text(
+                ui.statusMessage,
+                style = MaterialTheme.typography.bodyMedium,
+                modifier = Modifier.padding(top = 8.dp)
+            )
+        }
         if (ui.telemetryActive) {
             Spacer(Modifier.height(8.dp))
             StatusChip("Ride mode · auto-tracking", accent = true)
@@ -106,6 +117,18 @@ fun DashboardScreen(
             MetricTile("Avg km/L", Formatters.kmL(ui.avgEconomy), Modifier.weight(1f))
         }
 
+        if (ui.discovered.isNotEmpty()) {
+            Spacer(Modifier.height(20.dp))
+            SectionHeader(
+                "Nearby devices",
+                "Tap your scooter. Prefer rows marked Likely. Force-stop TVS Connect first."
+            )
+            ui.discovered.forEach { device ->
+                DiscoveredRow(device) { onConnectMac(device.mac) }
+                Spacer(Modifier.height(8.dp))
+            }
+        }
+
         Spacer(Modifier.height(24.dp))
         Column(verticalArrangement = Arrangement.spacedBy(10.dp)) {
             Button(
@@ -115,16 +138,22 @@ fun DashboardScreen(
                 colors = ButtonDefaults.buttonColors(containerColor = MaterialTheme.colorScheme.secondary)
             ) { Text("Find my scooter") }
 
-            if (ui.connection is ConnectionState.Connected || ui.connection is ConnectionState.Scanning) {
-                OutlinedButton(onClick = onDisconnect, modifier = Modifier.fillMaxWidth()) {
-                    Text("Disconnect")
+            when (ui.connection) {
+                is ConnectionState.Connected,
+                ConnectionState.Scanning,
+                ConnectionState.Connecting,
+                ConnectionState.Authenticating -> {
+                    OutlinedButton(onClick = onDisconnect, modifier = Modifier.fillMaxWidth()) {
+                        Text("Cancel / Disconnect")
+                    }
                 }
-            } else {
-                Button(onClick = onScan, modifier = Modifier.fillMaxWidth()) {
-                    Text(
-                        if (ui.settings.scooterMac.isBlank()) "Scan & pair scooter"
-                        else "Reconnect ${ui.settings.scooterName.ifBlank { "scooter" }}"
-                    )
+                else -> {
+                    Button(onClick = onScan, modifier = Modifier.fillMaxWidth()) {
+                        Text(
+                            if (ui.settings.scooterMac.isBlank()) "Scan & pair scooter"
+                            else "Reconnect ${ui.settings.scooterName.ifBlank { "scooter" }}"
+                        )
+                    }
                 }
             }
 
@@ -141,5 +170,28 @@ fun DashboardScreen(
             )
         }
         Spacer(Modifier.height(40.dp))
+    }
+}
+
+@Composable
+private fun DiscoveredRow(device: DiscoveredDevice, onClick: () -> Unit) {
+    Column(
+        modifier = Modifier
+            .fillMaxWidth()
+            .background(MaterialTheme.colorScheme.surface, RoundedCornerShape(14.dp))
+            .clickable(onClick = onClick)
+            .padding(14.dp)
+    ) {
+        Text(
+            buildString {
+                append(device.name)
+                if (device.likelyScooter) append(" · Likely scooter")
+            },
+            style = MaterialTheme.typography.titleLarge
+        )
+        Text(
+            "${device.mac} · RSSI ${device.rssi} dBm",
+            style = MaterialTheme.typography.bodyMedium
+        )
     }
 }
