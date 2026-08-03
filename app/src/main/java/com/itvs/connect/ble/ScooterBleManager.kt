@@ -113,7 +113,27 @@ class ScooterBleManager(private val context: Context) {
 
     var riderName: String = "iTVS"
 
-    fun startScan(preferredMac: String? = null) {
+    /**
+     * Reconnect to a previously saved scooter MAC.
+     * 1) Short MAC-filtered scan + active connect when seen
+     * 2) If not advertising yet, open a passive GATT autoConnect wait
+     */
+    fun reconnectSaved(mac: String) {
+        if (mac.isBlank()) return
+        when (_connectionState.value) {
+            is ConnectionState.Connected,
+            ConnectionState.Connecting,
+            ConnectionState.Authenticating,
+            ConnectionState.Scanning -> return
+            else -> Unit
+        }
+        val normalized = mac.uppercase()
+        _statusMessage.value = "Auto-connecting to saved scooter…"
+        // Prefer finding it via scan (faster when cluster is already on).
+        startScan(preferredMac = normalized, reconnectMode = true)
+    }
+
+    fun startScan(preferredMac: String? = null, reconnectMode: Boolean = false) {
         val bluetoothAdapter = adapter ?: run {
             fail("Bluetooth adapter unavailable")
             return
@@ -124,11 +144,16 @@ class ScooterBleManager(private val context: Context) {
         }
 
         stopScan()
-        expectingPairing = true
-        _discoveredDevices.value = emptyList()
+        expectingPairing = !reconnectMode && preferredMac.isNullOrBlank()
+        if (!reconnectMode) {
+            _discoveredDevices.value = emptyList()
+        }
         _connectionState.value = ConnectionState.Scanning
-        _statusMessage.value =
+        _statusMessage.value = if (reconnectMode) {
+            "Looking for saved scooter…"
+        } else {
             "Scanning nearby BLE devices… Keep TVS Connect force-stopped and scooter cluster on."
+        }
 
         // Seed list from already-bonded devices (often includes the scooter MAC).
         runCatching {
@@ -159,7 +184,7 @@ class ScooterBleManager(private val context: Context) {
                 if (!preferredMac.isNullOrBlank()) {
                     if (device.address.equals(preferredMac, ignoreCase = true)) {
                         stopScan()
-                        connect(device, autoConnect = false)
+                        connect(device, autoConnect = false, passiveWait = false)
                     }
                     return
                 }
@@ -170,7 +195,7 @@ class ScooterBleManager(private val context: Context) {
                 ) {
                     _statusMessage.value = "Found ${device.name ?: "scooter"} — connecting…"
                     stopScan()
-                    connect(device, autoConnect = false)
+                    connect(device, autoConnect = false, passiveWait = false)
                 }
             }
 
@@ -180,6 +205,11 @@ class ScooterBleManager(private val context: Context) {
 
             override fun onScanFailed(errorCode: Int) {
                 Log.w(TAG, "Scan failed: $errorCode")
+                if (reconnectMode && !preferredMac.isNullOrBlank()) {
+                    // Fall back to passive GATT wait.
+                    connectMac(preferredMac, autoConnect = true, passiveWait = true)
+                    return
+                }
                 fail("BLE scan failed (code $errorCode). Toggle Bluetooth and retry.")
             }
         }
@@ -196,10 +226,16 @@ class ScooterBleManager(private val context: Context) {
         }
 
         scanTimeoutJob?.cancel()
+        val timeout = if (reconnectMode) RECONNECT_SCAN_TIMEOUT_MS else SCAN_TIMEOUT_MS
         scanTimeoutJob = scope.launch {
-            delay(SCAN_TIMEOUT_MS)
+            delay(timeout)
             if (_connectionState.value is ConnectionState.Scanning) {
                 stopScan()
+                if (reconnectMode && !preferredMac.isNullOrBlank()) {
+                    _statusMessage.value = "Scooter not advertising yet — waiting for it…"
+                    connectMac(preferredMac, autoConnect = true, passiveWait = true)
+                    return@launch
+                }
                 val count = _discoveredDevices.value.size
                 val likely = _discoveredDevices.value.count { it.likelyScooter }
                 fail(
@@ -226,26 +262,38 @@ class ScooterBleManager(private val context: Context) {
         scanCallback = null
     }
 
-    fun connect(device: BluetoothDevice, autoConnect: Boolean = false) {
+    fun connect(device: BluetoothDevice, autoConnect: Boolean = false, passiveWait: Boolean = false) {
         stopScan()
         connectTimeoutJob?.cancel()
         gattLinkReady = false
         connectAttemptMac = device.address
         _connectionState.value = ConnectionState.Connecting
-        _statusMessage.value = "Connecting to ${device.name ?: device.address}…"
+        _statusMessage.value = if (passiveWait) {
+            "Waiting for ${device.name ?: "saved scooter"}…"
+        } else {
+            "Connecting to ${device.name ?: device.address}…"
+        }
         runCatching { gatt?.close() }
         gatt = null
         writeChar = null
         readChar = null
-        gatt = device.connectGatt(context, autoConnect, gattCallback, BluetoothDevice.TRANSPORT_LE)
+        gatt = device.connectGatt(context, autoConnect || passiveWait, gattCallback, BluetoothDevice.TRANSPORT_LE)
         // Don't leave the UI stuck on Connecting / Authenticating if discovery hangs.
+        val timeout = if (passiveWait) PASSIVE_CONNECT_TIMEOUT_MS else CONNECT_READY_TIMEOUT_MS
         connectTimeoutJob = scope.launch {
-            delay(CONNECT_READY_TIMEOUT_MS)
+            delay(timeout)
             val state = _connectionState.value
             if (state is ConnectionState.Connecting || state is ConnectionState.Authenticating) {
                 if (gattLinkReady || (writeChar != null && readChar != null)) {
                     markConnected(gatt?.device)
                     _statusMessage.value = "Connected — syncing with cluster…"
+                } else if (passiveWait) {
+                    // Soft fail — leave Disconnected so the service can retry auto-reconnect.
+                    runCatching { gatt?.disconnect() }
+                    runCatching { gatt?.close() }
+                    gatt = null
+                    _statusMessage.value = "Still waiting for scooter — will retry"
+                    _connectionState.value = ConnectionState.Disconnected
                 } else {
                     fail("Connection timed out. Retry scan / force-stop TVS Connect, then try again.")
                     runCatching { gatt?.disconnect() }
@@ -254,13 +302,12 @@ class ScooterBleManager(private val context: Context) {
         }
     }
 
-    fun connectMac(mac: String, autoConnect: Boolean = false) {
+    fun connectMac(mac: String, autoConnect: Boolean = false, passiveWait: Boolean = false) {
         val device = adapter?.getRemoteDevice(mac) ?: run {
             fail("Invalid MAC address")
             return
         }
-        // Prefer an active connection attempt over passive autoConnect for pairing UX.
-        connect(device, autoConnect = autoConnect)
+        connect(device, autoConnect = autoConnect, passiveWait = passiveWait)
     }
 
     fun disconnect() {
@@ -617,8 +664,11 @@ class ScooterBleManager(private val context: Context) {
     companion object {
         private const val TAG = "ScooterBleManager"
         private const val SCAN_TIMEOUT_MS = 25_000L
+        private const val RECONNECT_SCAN_TIMEOUT_MS = 12_000L
         /** Max time to sit on Connecting/Authenticating before promoting or failing. */
         private const val CONNECT_READY_TIMEOUT_MS = 12_000L
+        /** Passive GATT autoConnect can wait longer for the cluster to wake. */
+        private const val PASSIVE_CONNECT_TIMEOUT_MS = 45_000L
         private val SCOOTER_NAME_HINTS = listOf(
             "tvs", "jupiter", "ntorq", "ronin", "apache", "iqube",
             "smartx", "xonnect", "radeon", "sport", "rr310"

@@ -2,7 +2,8 @@ package com.itvs.connect.ble
 
 /**
  * Latest Google Maps navigation values harvested from the notification listener.
- * No Maps SDK / API key — text parsed from the ongoing nav notification.
+ * No Maps SDK / API key — text parsed from the ongoing nav notification
+ * (extras + inflated RemoteViews, since Maps often leaves title/text null).
  */
 data class MapsNavSnapshot(
     val etaText: String? = null,
@@ -18,7 +19,7 @@ data class MapsNavSnapshot(
         if (isFresh) remainingDistanceText?.takeIf { it.isNotBlank() } ?: "N/A" else "N/A"
 
     companion object {
-        const val STALE_MS = 120_000L
+        const val STALE_MS = 180_000L
         val Empty = MapsNavSnapshot()
     }
 }
@@ -39,33 +40,60 @@ object MapsNavigationStore {
         )
     }
 
+    fun update(snap: MapsNavSnapshot) {
+        update(snap.etaText, snap.remainingDistanceText)
+    }
+
     fun clear() {
         snapshot = MapsNavSnapshot.Empty
     }
 }
 
 /**
- * Parses ETA / remaining distance from Google Maps notification title/text blobs.
+ * Parses ETA / remaining distance from Google Maps notification text blobs.
+ *
+ * Typical Maps `nav_time` / header line looks like:
+ * `15 min · 4.2 km · 4:32 PM` (separators vary: · | - —)
  */
 object MapsNavParser {
 
-    private val ETA_PATTERNS = listOf(
-        Regex("""\bETA\s*[: ]\s*(\d{1,2}:\d{2}\s*(?:AM|PM|am|pm)?)\b"""),
-        Regex("""\b(\d{1,3})\s*(?:min|mins|minute|minutes)\b""", RegexOption.IGNORE_CASE),
-        Regex("""\b(\d{1,2})\s*h(?:r|ours?)?\s*(\d{1,2})\s*m""", RegexOption.IGNORE_CASE)
-    )
+    private val SPLIT = Regex("""\s*[·|—–\-]\s*""")
 
-    private val DIST_PATTERNS = listOf(
-        Regex("""\b(\d+(?:\.\d+)?)\s*(km|mi|m)\b""", RegexOption.IGNORE_CASE),
-        Regex("""\b(\d+(?:\.\d+)?)\s*(kilometers?|miles?|meters?)\b""", RegexOption.IGNORE_CASE)
+    private val CLOCK_ETA = Regex(
+        """\b(\d{1,2}[:.]\d{2}\s*(?:AM|PM|am|pm)?)\b"""
+    )
+    private val DURATION_HM = Regex(
+        """\b(\d{1,2})\s*h(?:r|ours?)?\s*(\d{1,2})\s*m(?:in|ins?)?\b""",
+        RegexOption.IGNORE_CASE
+    )
+    private val DURATION_MIN = Regex(
+        """\b(\d{1,3})\s*(?:min|mins|minute|minutes)\b""",
+        RegexOption.IGNORE_CASE
+    )
+    private val DIST = Regex(
+        """\b(\d+(?:[.,]\d+)?)\s*(km|mi|m|kilometers?|miles?|meters?)\b""",
+        RegexOption.IGNORE_CASE
     )
 
     fun parse(vararg parts: String?): MapsNavSnapshot {
-        val blob = parts.filterNotNull().joinToString(" · ").trim()
-        if (blob.isBlank()) return MapsNavSnapshot.Empty
+        val cleaned = parts.filterNotNull()
+            .map { it.replace("ETA_HINT", "").trim() }
+            .filter { it.isNotBlank() }
+        if (cleaned.isEmpty()) return MapsNavSnapshot.Empty
 
-        val eta = extractEta(blob)
-        val distance = extractDistance(blob)
+        val blob = cleaned.joinToString(" · ")
+        // Prefer structured "duration · distance · clock" lines when present.
+        var eta: String? = null
+        var distance: String? = null
+        for (line in cleaned) {
+            val structured = parseNavTimeLine(line)
+            if (structured != null) {
+                eta = eta ?: structured.first
+                distance = distance ?: structured.second
+            }
+        }
+        eta = eta ?: extractEta(blob)
+        distance = distance ?: extractDistance(blob)
         if (eta == null && distance == null) return MapsNavSnapshot.Empty
 
         return MapsNavSnapshot(
@@ -75,43 +103,73 @@ object MapsNavParser {
         )
     }
 
+    /**
+     * Maps often uses: `12 min · 3.4 km · 5:10 PM`
+     * @return Pair(eta, distance)
+     */
+    fun parseNavTimeLine(line: String): Pair<String?, String?>? {
+        val parts = line.split(SPLIT).map { it.trim() }.filter { it.isNotEmpty() }
+        if (parts.size < 2) return null
+
+        var duration: String? = null
+        var distance: String? = null
+        var clock: String? = null
+        for (part in parts) {
+            when {
+                duration == null && DURATION_HM.containsMatchIn(part) -> {
+                    val m = DURATION_HM.find(part)!!
+                    duration = "${m.groupValues[1]}h ${m.groupValues[2]}m"
+                }
+                duration == null && DURATION_MIN.containsMatchIn(part) -> {
+                    duration = "${DURATION_MIN.find(part)!!.groupValues[1]}m"
+                }
+                distance == null && DIST.containsMatchIn(part) -> {
+                    distance = normalizeDistance(DIST.find(part)!!)
+                }
+                clock == null && CLOCK_ETA.containsMatchIn(part) -> {
+                    clock = CLOCK_ETA.find(part)!!.groupValues[1].trim()
+                }
+            }
+        }
+        // Prefer arrival clock when present; fall back to remaining duration.
+        val eta = clock ?: duration
+        if (eta == null && distance == null) return null
+        return eta to distance
+    }
+
     private fun extractEta(blob: String): String? {
-        ETA_PATTERNS[0].find(blob)?.groupValues?.getOrNull(1)?.let { return it.trim() }
-
-        ETA_PATTERNS[2].find(blob)?.let { m ->
-            val h = m.groupValues[1]
-            val min = m.groupValues[2]
-            return "${h}h ${min}m"
+        CLOCK_ETA.find(blob)?.groupValues?.getOrNull(1)?.let { return it.trim() }
+        DURATION_HM.find(blob)?.let { m ->
+            return "${m.groupValues[1]}h ${m.groupValues[2]}m"
         }
-
-        ETA_PATTERNS[1].find(blob)?.groupValues?.getOrNull(1)?.let { mins ->
-            return "${mins}m"
-        }
+        DURATION_MIN.find(blob)?.groupValues?.getOrNull(1)?.let { return "${it}m" }
         return null
     }
 
     private fun extractDistance(blob: String): String? {
-        for (pattern in DIST_PATTERNS) {
-            val m = pattern.find(blob) ?: continue
-            val value = m.groupValues.getOrNull(1) ?: continue
-            val unitRaw = m.groupValues.getOrNull(2)?.lowercase().orEmpty()
-            val unit = when {
-                unitRaw.startsWith("km") || unitRaw.startsWith("kilometer") -> "km"
-                unitRaw.startsWith("mi") || unitRaw.startsWith("mile") -> "mi"
-                (unitRaw == "m" || unitRaw.startsWith("meter")) &&
-                    value.toDoubleOrNull()?.let { it >= 100 } == true -> "m"
-                else -> null
-            } ?: continue
-            return "$value $unit"
+        val m = DIST.find(blob) ?: return null
+        return normalizeDistance(m)
+    }
+
+    private fun normalizeDistance(m: MatchResult): String? {
+        val value = m.groupValues.getOrNull(1)?.replace(',', '.') ?: return null
+        val unitRaw = m.groupValues.getOrNull(2)?.lowercase().orEmpty()
+        val unit = when {
+            unitRaw.startsWith("km") || unitRaw.startsWith("kilometer") -> "km"
+            unitRaw.startsWith("mi") || unitRaw.startsWith("mile") -> "mi"
+            (unitRaw == "m" || unitRaw.startsWith("meter")) &&
+                value.toDoubleOrNull()?.let { it >= 100 } == true -> "m"
+            else -> return null
         }
-        return null
+        return "$value $unit"
     }
 
     fun isMapsPackage(packageName: String?): Boolean {
         if (packageName.isNullOrBlank()) return false
         val p = packageName.lowercase()
-        return p.contains("maps") ||
-            p == "com.google.android.apps.maps" ||
-            p.contains("com.google.android.apps.mapslite")
+        return p == "com.google.android.apps.maps" ||
+            p.contains("com.google.android.apps.mapslite") ||
+            p.endsWith(".apps.maps") ||
+            (p.contains("google") && p.contains("maps"))
     }
 }

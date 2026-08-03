@@ -13,7 +13,7 @@ class BootReceiver : BroadcastReceiver() {
         val prefs = PreferencesRepository(context)
         val settings = runBlocking { prefs.settings.first() }
         if (settings.autoConnect && settings.scooterMac.isNotBlank()) {
-            ScooterBleService.start(context, ScooterBleService.ACTION_START_SCAN)
+            ScooterBleService.start(context, ScooterBleService.ACTION_AUTO_RECONNECT)
         }
     }
 }

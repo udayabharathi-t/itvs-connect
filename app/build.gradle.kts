@@ -12,13 +12,8 @@ android {
         applicationId = "com.itvs.connect"
         minSdk = 26
         targetSdk = 34
-<<<<<<< HEAD
-        versionCode = 8
-        versionName = "1.0.5"
-=======
-        versionCode = 7
-        versionName = "1.0.4"
->>>>>>> origin/main
+        versionCode = 11
+        versionName = "1.0.8"
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
     }
 

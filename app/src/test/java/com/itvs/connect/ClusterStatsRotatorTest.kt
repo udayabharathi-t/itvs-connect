@@ -10,23 +10,50 @@ import org.junit.Test
 class ClusterStatsRotatorTest {
 
     @Test
-    fun pagesIncludeRideMapsAndNa() {
+    fun pagesIncludeRideKmLiveAndAvgSpeed() {
         val pages = ClusterStatsRotator.pages(
             ClusterStatsRotator.StatsSnapshot(
                 rideDurationMs = 90 * 60_000L,
+                rideDistanceKm = 42.5,
                 liveMileageKmL = 48,
-                avgMileageKmL = 45.5,
+                tripKmPerLitre = 36.2,
+                avgSpeedKmh = 28.0,
                 mapsEta = "N/A",
                 mapsDistance = "N/A"
             )
         )
-        assertThat(pages).hasSize(5)
-        assertThat(pages[0].first).isEqualTo("Ride time:")
+        assertThat(pages).hasSize(7)
+        assertThat(pages.map { it.first }).containsExactly(
+            "Ride time:",
+            "Ride km:",
+            "Live km/L:",
+            "Trip km/L:",
+            "Avg speed:",
+            "Maps ETA:",
+            "Dist left:"
+        ).inOrder()
         assertThat(pages[0].second).isEqualTo("1h 30m")
-        assertThat(pages[1]).isEqualTo("Live mileage:" to "48 km/L")
-        assertThat(pages[2]).isEqualTo("Avg mileage:" to "45.5 km/L")
-        assertThat(pages[3]).isEqualTo("Maps ETA:" to "N/A")
-        assertThat(pages[4]).isEqualTo("Distance left:" to "N/A")
+        assertThat(pages[1].second).isEqualTo("42.5 km")
+        assertThat(pages[2].second).isEqualTo("48 km/L")
+        assertThat(pages[3].second).isEqualTo("36.2 km/L")
+        assertThat(pages[4].second).isEqualTo("28 km/h")
+    }
+
+    @Test
+    fun tripKmLShowsNaWhenMissing() {
+        val pages = ClusterStatsRotator.pages(
+            ClusterStatsRotator.StatsSnapshot(
+                rideDurationMs = 60_000L,
+                rideDistanceKm = 1.0,
+                liveMileageKmL = 40,
+                tripKmPerLitre = null,
+                avgSpeedKmh = 10.0,
+                mapsEta = "N/A",
+                mapsDistance = "N/A"
+            )
+        )
+        assertThat(pages.first { it.first == "Trip km/L:" }.second).isEqualTo("N/A")
+        assertThat(pages.first { it.first == "Live km/L:" }.second).isEqualTo("40 km/L")
     }
 
     @Test
@@ -39,6 +66,13 @@ class ClusterStatsRotatorTest {
     fun mapsParserExtractsEtaAndDistance() {
         val snap = MapsNavParser.parse("Turn left onto Mount Road", "15 min · 4.2 km")
         assertThat(snap.etaText).isEqualTo("15m")
+        assertThat(snap.remainingDistanceText).isEqualTo("4.2 km")
+    }
+
+    @Test
+    fun mapsParserParsesClassicNavTimeLine() {
+        val snap = MapsNavParser.parse("15 min · 4.2 km · 4:32 PM")
+        assertThat(snap.etaText).isEqualTo("4:32 PM")
         assertThat(snap.remainingDistanceText).isEqualTo("4.2 km")
     }
 

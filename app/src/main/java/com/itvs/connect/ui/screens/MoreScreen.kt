@@ -89,9 +89,18 @@ fun MoreScreen(
         )
 
         Spacer(Modifier.height(12.dp))
-        RowSwitch("Auto-connect on boot", settings.autoConnect) {
+        RowSwitch("Auto-reconnect", settings.autoConnect) {
             onChange { s -> s.copy(autoConnect = it) }
         }
+        Text(
+            if (settings.scooterMac.isBlank()) {
+                "Pair once (scan & connect). After that, the app reconnects when you open it, on boot, or when Bluetooth turns on — scooter cluster must be ON, and force-stop official TVS Connect."
+            } else {
+                "Will auto-reconnect to ${settings.scooterName.ifBlank { "saved scooter" }} (${settings.scooterMac}). Cluster ON · TVS Connect force-stopped."
+            },
+            style = MaterialTheme.typography.bodyMedium,
+            modifier = Modifier.padding(bottom = 8.dp)
+        )
         RowSwitch("Mirror app notifications", settings.appNotificationsEnabled) {
             onChange { s -> s.copy(appNotificationsEnabled = it) }
         }

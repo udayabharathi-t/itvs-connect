@@ -60,9 +60,13 @@ class RideTracker(
         val distanceKm: Double,
         val durationMs: Long,
         val currentSpeedKmh: Double,
+        val avgSpeedKmh: Double,
         val fuelPercent: Int?,
         val afe: Int?,
-        val avgAfe: Double?
+        /** Cluster AFE sample average — only when values actually varied. */
+        val avgAfe: Double?,
+        /** Trip economy from fuel-bar delta × tank capacity when calculable. */
+        val tripKmPerLitre: Double?
     )
 
     fun onTelemetry(
@@ -237,16 +241,37 @@ class RideTracker(
             latestOdo,
             gpsDistanceM / 1000.0
         )
+        val durationMs = now - startTimeMs
+        val litres = RideStatsCalculator.estimateLitresUsed(
+            startFuelPercent = startFuel,
+            endFuelPercent = latestFuel,
+            tankCapacityLitres = tankCapacity
+        )
+        val tripKmL = if (litres != null && litres > 0.05 && distance > 0.05) {
+            distance / litres
+        } else {
+            null
+        }
+        // Cluster AFE is often a sticky single reading (e.g. always 40). Only treat
+        // sample average as meaningful when the cluster actually changed values.
+        val distinctAfe = afeSamples.filter { it in 1..99 }.toSet()
+        val avgAfe = if (distinctAfe.size >= 2) {
+            RideStatsCalculator.averageAfe(afeSamples)
+        } else {
+            null
+        }
         _activeRide.value = ActiveRideUi(
             startedAtMs = startTimeMs,
             distanceKm = distance,
-            durationMs = now - startTimeMs,
+            durationMs = durationMs,
             currentSpeedKmh = lastLocation?.let {
                 if (it.hasSpeed()) it.speed * 3.6 else 0.0
             } ?: 0.0,
+            avgSpeedKmh = RideStatsCalculator.averageSpeedKmh(distance, durationMs),
             fuelPercent = latestFuel,
             afe = latestAfe,
-            avgAfe = RideStatsCalculator.averageAfe(afeSamples)
+            avgAfe = avgAfe,
+            tripKmPerLitre = tripKmL
         )
     }
 

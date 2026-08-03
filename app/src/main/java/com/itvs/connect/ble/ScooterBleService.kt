@@ -5,6 +5,7 @@ import android.app.NotificationChannel
 import android.app.NotificationManager
 import android.app.PendingIntent
 import android.app.Service
+import android.bluetooth.BluetoothAdapter
 import android.content.BroadcastReceiver
 import android.content.Context
 import android.content.Intent
@@ -28,6 +29,7 @@ import kotlinx.coroutines.cancel
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.collectLatest
 import kotlinx.coroutines.flow.first
+import kotlinx.coroutines.isActive
 import kotlinx.coroutines.launch
 
 class ScooterBleService : Service() {
@@ -48,7 +50,10 @@ class ScooterBleService : Service() {
     private var wakeLock: PowerManager.WakeLock? = null
     private var rideEndJob: Job? = null
     private var flashClearJob: Job? = null
+    private var autoReconnectJob: Job? = null
     private var callState: String = TelephonyManager.EXTRA_STATE_IDLE
+    /** True after the user taps Disconnect — pause auto-reconnect until next app open / BT on. */
+    private var userDisconnected = false
     private lateinit var statsRotator: ClusterStatsRotator
 
     private lateinit var gestureDetector: ButtonGestureDetector
@@ -90,13 +95,12 @@ class ScooterBleService : Service() {
         startForeground(NOTIF_ID, buildNotification("Starting…"))
         observeStreams()
         registerReceiver(callReceiver, IntentFilter(TelephonyManager.ACTION_PHONE_STATE_CHANGED))
+        registerReceiver(bluetoothReceiver, IntentFilter(BluetoothAdapter.ACTION_STATE_CHANGED))
 
         scope.launch {
             settings = prefs.settings.first()
             ble.riderName = settings.riderName
-            if (settings.autoConnect && settings.scooterMac.isNotBlank()) {
-                ble.startScan(settings.scooterMac)
-            }
+            maybeStartAutoReconnect(reason = "service-start")
         }
     }
 
@@ -104,14 +108,32 @@ class ScooterBleService : Service() {
         when (intent?.action) {
             ACTION_FIND_ME -> ble.findMe()
             ACTION_START_SCAN -> scope.launch {
+                userDisconnected = false
                 val s = prefs.settings.first()
-                ble.startScan(s.scooterMac.ifBlank { null })
+                settings = s
+                // Manual scan: if we already know the MAC, reconnect that scooter.
+                if (s.scooterMac.isNotBlank()) {
+                    ble.reconnectSaved(s.scooterMac)
+                } else {
+                    ble.startScan(null)
+                }
+            }
+            ACTION_AUTO_RECONNECT -> scope.launch {
+                settings = prefs.settings.first()
+                ble.riderName = settings.riderName
+                maybeStartAutoReconnect(reason = "explicit")
             }
             ACTION_CONNECT_MAC -> {
+                userDisconnected = false
                 val mac = intent.getStringExtra(EXTRA_MAC).orEmpty()
                 if (mac.isNotBlank()) ble.connectMac(mac, autoConnect = false)
             }
-            ACTION_DISCONNECT -> ble.disconnect()
+            ACTION_DISCONNECT -> {
+                userDisconnected = true
+                autoReconnectJob?.cancel()
+                autoReconnectJob = null
+                ble.disconnect()
+            }
             ACTION_STOP -> {
                 stopSelf()
             }
@@ -123,6 +145,10 @@ class ScooterBleService : Service() {
                     if (r1.isNotBlank()) flashCluster(r1, r2)
                 }
             }
+            null -> scope.launch {
+                settings = prefs.settings.first()
+                maybeStartAutoReconnect(reason = "sticky-restart")
+            }
         }
         return START_STICKY
     }
@@ -131,6 +157,8 @@ class ScooterBleService : Service() {
 
     override fun onDestroy() {
         runCatching { unregisterReceiver(callReceiver) }
+        runCatching { unregisterReceiver(bluetoothReceiver) }
+        autoReconnectJob?.cancel()
         statsRotator.stop()
         rideEndJob?.cancel()
         releaseWakeLock()
@@ -141,9 +169,47 @@ class ScooterBleService : Service() {
     fun manager(): ScooterBleManager = ble
     fun tracker(): RideTracker = rideTracker
 
+    @Suppress("UNUSED_PARAMETER")
+    private fun maybeStartAutoReconnect(reason: String) {
+        if (userDisconnected) return
+        if (!settings.autoConnect) return
+        if (settings.scooterMac.isBlank()) return
+        when (ble.connectionState.value) {
+            is ConnectionState.Connected,
+            ConnectionState.Connecting,
+            ConnectionState.Authenticating,
+            ConnectionState.Scanning -> return
+            else -> Unit
+        }
+        autoReconnectJob?.cancel()
+        autoReconnectJob = scope.launch {
+            var attempt = 0
+            while (isActive && settings.autoConnect && !userDisconnected) {
+                val mac = settings.scooterMac
+                if (mac.isBlank()) break
+                when (ble.connectionState.value) {
+                    is ConnectionState.Connected -> break
+                    ConnectionState.Connecting,
+                    ConnectionState.Authenticating,
+                    ConnectionState.Scanning -> {
+                        delay(4_000)
+                        continue
+                    }
+                    else -> Unit
+                }
+                attempt++
+                notify("Auto-connecting… (#$attempt)")
+                ble.reconnectSaved(mac)
+                // Wait for connect attempt to settle before retrying.
+                delay(if (attempt <= 2) 18_000L else 30_000L)
+            }
+        }
+    }
+
     private fun observeStreams() {
         scope.launch {
             prefs.settings.collectLatest {
+                val wasAuto = settings.autoConnect
                 settings = it
                 ble.riderName = it.riderName
                 gestureDetector.updateTiming(
@@ -151,6 +217,14 @@ class ScooterBleService : Service() {
                     it.longPressThresholdMs,
                     it.cooldownMs
                 )
+                if (it.autoConnect && (!wasAuto || it.scooterMac.isNotBlank())) {
+                    userDisconnected = false
+                    maybeStartAutoReconnect(reason = "settings")
+                }
+                if (!it.autoConnect) {
+                    autoReconnectJob?.cancel()
+                    autoReconnectJob = null
+                }
             }
         }
         scope.launch {
@@ -168,16 +242,28 @@ class ScooterBleService : Service() {
                 }
                 notify(text)
 
-                // Disconnect should immediately finalize the in-progress ride.
-                if (state is ConnectionState.Disconnected || state is ConnectionState.Failed) {
-                    statsRotator.stop()
-                    if (rideTracker.isActive()) {
-                        rideEndJob?.cancel()
-                        rideEndJob = null
-                        rideTracker.endRideIfNeeded()
-                        releaseWakeLock()
-                        notify("Ride saved · disconnected")
+                when (state) {
+                    is ConnectionState.Connected -> {
+                        userDisconnected = false
+                        autoReconnectJob?.cancel()
+                        autoReconnectJob = null
                     }
+                    ConnectionState.Disconnected,
+                    is ConnectionState.Failed -> {
+                        statsRotator.stop()
+                        if (rideTracker.isActive()) {
+                            rideEndJob?.cancel()
+                            rideEndJob = null
+                            rideTracker.endRideIfNeeded()
+                            releaseWakeLock()
+                            notify("Ride saved · disconnected")
+                        }
+                        // Unexpected drop — keep trying if auto-connect is on.
+                        if (!userDisconnected && settings.autoConnect && settings.scooterMac.isNotBlank()) {
+                            maybeStartAutoReconnect(reason = "disconnect")
+                        }
+                    }
+                    else -> Unit
                 }
             }
         }
@@ -195,6 +281,10 @@ class ScooterBleService : Service() {
                         tankCapacityLitres = s.tankCapacityLitres
                     )
                     notify(getString(R.string.ride_notification_title))
+                    // Auto-start continuous stats HUD when a gesture is mapped to it.
+                    if (isRideStatsMapped() && !statsRotator.isRunning) {
+                        statsRotator.start(resetIndex = true)
+                    }
                 } else if (rideTracker.isActive()) {
                     // Soft end: grace period in case of brief telemetry gaps while still connected.
                     // Hard disconnect path above ends immediately.
@@ -205,6 +295,7 @@ class ScooterBleService : Service() {
                             if (!ble.isTelemetryActive.value && rideTracker.isActive()) {
                                 rideTracker.endRideIfNeeded()
                                 releaseWakeLock()
+                                statsRotator.stop()
                                 notify(getString(R.string.service_notification_title))
                             }
                         }
@@ -295,13 +386,10 @@ class ScooterBleService : Service() {
             else -> ButtonAction.DO_NOTHING
         }
         if (action == ButtonAction.ROTATE_RIDE_STATS) {
-            if (statsRotator.isRunning) {
-                statsRotator.stop()
-                flashCluster("Stats stopped")
-            } else {
-                // Starts immediately with Ride time, then advances every 10s.
-                statsRotator.start()
-            }
+            // Each press advances the page; continuous refresh keeps Assist ready away.
+            val label = statsRotator.nextPage()
+            // Brief confirmation is unnecessary — nextPage already flashes the new stat.
+            notify("Stats · $label")
             return
         }
         val dial = when {
@@ -314,6 +402,16 @@ class ScooterBleService : Service() {
         if (action != ButtonAction.DO_NOTHING && action.displayName.isNotBlank()) {
             flashCluster(action.displayName.take(17))
         }
+    }
+
+    private fun isRideStatsMapped(): Boolean {
+        return settings.singlePress == ButtonAction.ROTATE_RIDE_STATS ||
+            settings.doublePress == ButtonAction.ROTATE_RIDE_STATS ||
+            settings.triplePress == ButtonAction.ROTATE_RIDE_STATS ||
+            settings.longPress == ButtonAction.ROTATE_RIDE_STATS ||
+            settings.singleLongPress == ButtonAction.ROTATE_RIDE_STATS ||
+            settings.doubleLongPress == ButtonAction.ROTATE_RIDE_STATS ||
+            settings.tripleLongPress == ButtonAction.ROTATE_RIDE_STATS
     }
 
     private fun matchesCallGesture(gesture: CallGesture, count: Int, isLong: Boolean): Boolean {
@@ -331,6 +429,20 @@ class ScooterBleService : Service() {
         ble.sendClusterMessage(row1, row2)
         flashClearJob = scope.launch {
             delay(BleConstants.CLUSTER_FLASH_MS)
+        }
+    }
+
+    private val bluetoothReceiver = object : BroadcastReceiver() {
+        override fun onReceive(context: Context?, intent: Intent?) {
+            if (intent?.action != BluetoothAdapter.ACTION_STATE_CHANGED) return
+            val state = intent.getIntExtra(BluetoothAdapter.EXTRA_STATE, BluetoothAdapter.ERROR)
+            if (state == BluetoothAdapter.STATE_ON) {
+                userDisconnected = false
+                scope.launch {
+                    settings = prefs.settings.first()
+                    maybeStartAutoReconnect(reason = "bluetooth-on")
+                }
+            }
         }
     }
 
@@ -416,6 +528,7 @@ class ScooterBleService : Service() {
     companion object {
         const val ACTION_FIND_ME = "com.itvs.connect.action.FIND_ME"
         const val ACTION_START_SCAN = "com.itvs.connect.action.START_SCAN"
+        const val ACTION_AUTO_RECONNECT = "com.itvs.connect.action.AUTO_RECONNECT"
         const val ACTION_CONNECT_MAC = "com.itvs.connect.action.CONNECT_MAC"
         const val ACTION_DISCONNECT = "com.itvs.connect.action.DISCONNECT"
         const val ACTION_STOP = "com.itvs.connect.action.STOP"

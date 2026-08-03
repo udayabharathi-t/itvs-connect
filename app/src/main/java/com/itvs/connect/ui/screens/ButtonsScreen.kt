@@ -41,7 +41,7 @@ fun ButtonsScreen(
     ) {
         SectionHeader(
             "Button mapping",
-            "Map Voice-button gestures. Choose Rotate ride stats to cycle ride time, mileage, and Maps ETA on the cluster every 10s (press again to stop)."
+            "Map Cycle ride stats to a Voice gesture. It continuously feeds one value to the cluster (blocks Assist ready). Each press advances: Ride time → Ride km → Live km/L → Trip km/L → Avg speed → Maps ETA → Dist left. Enable Notification access for Maps values."
         )
 
         ActionPicker("Single tap", settings.singlePress) {

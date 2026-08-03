@@ -98,7 +98,7 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
     }
 
     fun startService() {
-        ScooterBleService.start(getApplication())
+        ScooterBleService.start(getApplication(), ScooterBleService.ACTION_AUTO_RECONNECT)
     }
 
     fun scan() {
