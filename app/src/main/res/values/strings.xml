@@ -1,0 +1,10 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <string name="app_name">iTVS Connect</string>
+    <string name="notification_listener_label">iTVS Connect notification mirror</string>
+    <string name="service_channel_name">Scooter connection</string>
+    <string name="ride_channel_name">Active ride</string>
+    <string name="service_notification_title">Connected to scooter</string>
+    <string name="ride_notification_title">Ride in progress</string>
+    <string name="scanning_notification_title">Looking for scooter</string>
+</resources>
