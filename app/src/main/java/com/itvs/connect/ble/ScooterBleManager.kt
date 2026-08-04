@@ -90,6 +90,14 @@ class ScooterBleManager(private val context: Context) {
     private val _averageFuelEconomy = MutableStateFlow(0)
     val averageFuelEconomy: StateFlow<Int> = _averageFuelEconomy.asStateFlow()
 
+    /** Best live km/L from latest economy packet (IFE preferred, else AFE). 0 = none. */
+    private val _liveFuelEconomy = MutableStateFlow(0)
+    val liveFuelEconomy: StateFlow<Int> = _liveFuelEconomy.asStateFlow()
+
+    /** Epoch ms of last economy packet that carried a valid live km/L. */
+    private val _liveEconomyUpdatedAtMs = MutableStateFlow(0L)
+    val liveEconomyUpdatedAtMs: StateFlow<Long> = _liveEconomyUpdatedAtMs.asStateFlow()
+
     private val _distanceToEmpty = MutableStateFlow(0)
     val distanceToEmpty: StateFlow<Int> = _distanceToEmpty.asStateFlow()
 
@@ -110,6 +118,18 @@ class ScooterBleManager(private val context: Context) {
 
     private val _telemetryPersisted = MutableSharedFlow<Unit>(extraBufferCapacity = 1)
     val telemetryPersisted: SharedFlow<Unit> = _telemetryPersisted.asSharedFlow()
+
+    /** Fires on every economy packet with a valid live km/L (not throttled). */
+    private val _liveEconomySamples = MutableSharedFlow<Int>(extraBufferCapacity = 32)
+    val liveEconomySamples: SharedFlow<Int> = _liveEconomySamples.asSharedFlow()
+
+    fun freshLiveEconomyKmL(nowMs: Long = System.currentTimeMillis()): Int? {
+        val value = _liveFuelEconomy.value
+        val at = _liveEconomyUpdatedAtMs.value
+        if (!TelemetryParser.isValidKmL(value) || at <= 0L) return null
+        if (nowMs - at > LIVE_ECONOMY_STALE_MS) return null
+        return value
+    }
 
     var riderName: String = "iTVS"
 
@@ -555,6 +575,23 @@ class ScooterBleManager(private val context: Context) {
         snapshot.odometerKm?.let { _odometer.value = it }
         snapshot.fuelPercent?.let { _fuelLevel.value = it }
         snapshot.averageFuelEconomy?.let { _averageFuelEconomy.value = it }
+        // Economy packet with no valid live (IFE/-- at low speed and empty AFE):
+        // clear live so HUD shows N/A instead of a sticky leftover.
+        if (dataId == BleConstants.DATA_ID_ECONOMY) {
+            val live = snapshot.liveFuelEconomy
+            if (live != null) {
+                _liveFuelEconomy.value = live
+                _liveEconomyUpdatedAtMs.value = now
+                _liveEconomySamples.tryEmit(live)
+                Log.d(
+                    TAG,
+                    "Economy live=$live ife=${snapshot.instantFuelEconomy} afe=${snapshot.averageFuelEconomy}"
+                )
+            } else {
+                _liveFuelEconomy.value = 0
+                _liveEconomyUpdatedAtMs.value = 0L
+            }
+        }
         snapshot.distanceToEmptyKm?.let { _distanceToEmpty.value = it }
         snapshot.serviceReminder?.let {
             if (_serviceReminder.value != it) _serviceReminder.value = it
@@ -669,6 +706,8 @@ class ScooterBleManager(private val context: Context) {
         private const val CONNECT_READY_TIMEOUT_MS = 12_000L
         /** Passive GATT autoConnect can wait longer for the cluster to wake. */
         private const val PASSIVE_CONNECT_TIMEOUT_MS = 45_000L
+        /** Live km/L older than this is treated as missing (N/A). */
+        const val LIVE_ECONOMY_STALE_MS = 15_000L
         private val SCOOTER_NAME_HINTS = listOf(
             "tvs", "jupiter", "ntorq", "ronin", "apache", "iqube",
             "smartx", "xonnect", "radeon", "sport", "rr310"

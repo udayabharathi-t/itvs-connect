@@ -121,14 +121,15 @@ class ClusterStatsRotator(
 
         fun fromLive(
             ride: RideTracker.ActiveRideUi?,
-            liveAfe: Int,
+            liveKmL: Int?,
             maps: MapsNavSnapshot
         ): StatsSnapshot {
             return StatsSnapshot(
                 rideDurationMs = ride?.durationMs,
                 rideDistanceKm = ride?.distanceKm,
-                liveMileageKmL = liveAfe.takeIf { it in 1..99 } ?: ride?.afe,
-                // Prefer fuel-bar trip economy; do not fall back to sticky cluster AFE.
+                // Fresh live only — no sticky fallback to an old constant reading.
+                liveMileageKmL = liveKmL?.takeIf { it in 1..99 },
+                // Trip = running average of live samples; null → N/A.
                 tripKmPerLitre = ride?.tripKmPerLitre,
                 avgSpeedKmh = ride?.avgSpeedKmh,
                 mapsEta = maps.etaOrNa(),

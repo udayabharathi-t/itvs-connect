@@ -10,6 +10,7 @@ import com.google.android.gms.location.LocationResult
 import com.google.android.gms.location.LocationServices
 import com.google.android.gms.location.Priority
 import com.google.gson.Gson
+import com.itvs.connect.ble.TelemetryParser
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
@@ -35,14 +36,15 @@ class RideTracker(
     private var startFuel: Int? = null
     private var latestOdo: Double? = null
     private var latestFuel: Int? = null
-    private var latestAfe: Int? = null
+    private var latestLiveKmL: Int? = null
     private var maxSpeed = 0.0
     private var gpsDistanceM = 0.0
     private var lastLocation: Location? = null
     private var startLat: Double? = null
     private var startLng: Double? = null
     private val route = mutableListOf<RoutePoint>()
-    private val afeSamples = mutableListOf<Int>()
+    /** Live km/L samples for trip running average (only when ride is active). */
+    private val liveKmLSamples = mutableListOf<Int>()
     private var tankCapacity = 5.1
 
     private val _activeRide = MutableStateFlow<ActiveRideUi?>(null)
@@ -62,31 +64,45 @@ class RideTracker(
         val currentSpeedKmh: Double,
         val avgSpeedKmh: Double,
         val fuelPercent: Int?,
+        /** Latest fresh live km/L from cluster economy packets. */
         val afe: Int?,
-        /** Cluster AFE sample average — only when values actually varied. */
+        /** Running average of live km/L samples this ride. */
         val avgAfe: Double?,
-        /** Trip economy from fuel-bar delta × tank capacity when calculable. */
+        /** Same as [avgAfe] — trip economy from live samples only. */
         val tripKmPerLitre: Double?
     )
+
+    /**
+     * Record a live km/L reading from an economy packet.
+     * Trip km/L is the running average of these samples.
+     * No samples → trip stays null (N/A).
+     */
+    fun onLiveEconomy(liveKmL: Int) {
+        if (!TelemetryParser.isValidKmL(liveKmL)) return
+        latestLiveKmL = liveKmL
+        if (active) {
+            liveKmLSamples += liveKmL
+            if (liveKmLSamples.size > 2_000) {
+                val compacted = liveKmLSamples.filterIndexed { index, _ -> index % 2 == 0 }.toMutableList()
+                liveKmLSamples.clear()
+                liveKmLSamples.addAll(compacted)
+            }
+            publishActive()
+        }
+    }
 
     fun onTelemetry(
         odometerKm: Double,
         fuelPercent: Int,
-        afe: Int,
+        liveKmL: Int,
         tankCapacityLitres: Double
     ) {
         tankCapacity = tankCapacityLitres
         latestOdo = odometerKm
         latestFuel = fuelPercent
-        latestAfe = afe
-        if (active && afe in 1..99) {
-            // Keep a running sample stream for average km/L (cap memory).
-            afeSamples += afe
-            if (afeSamples.size > 2_000) {
-                val compacted = afeSamples.filterIndexed { index, _ -> index % 2 == 0 }.toMutableList()
-                afeSamples.clear()
-                afeSamples.addAll(compacted)
-            }
+        if (TelemetryParser.isValidKmL(liveKmL)) {
+            // Prefer dedicated onLiveEconomy for sampling; still refresh latest here.
+            latestLiveKmL = liveKmL
         }
         if (active) {
             publishActive()
@@ -97,11 +113,11 @@ class RideTracker(
     suspend fun startRideIfNeeded(
         odometerKm: Double,
         fuelPercent: Int,
-        afe: Int,
+        liveKmL: Int,
         tankCapacityLitres: Double
     ) {
         if (active) {
-            onTelemetry(odometerKm, fuelPercent, afe, tankCapacityLitres)
+            onTelemetry(odometerKm, fuelPercent, liveKmL, tankCapacityLitres)
             return
         }
         active = true
@@ -111,15 +127,15 @@ class RideTracker(
         startFuel = fuelPercent.takeIf { it > 0 }
         latestOdo = startOdo
         latestFuel = startFuel
-        latestAfe = afe.takeIf { it in 1..99 }
+        latestLiveKmL = liveKmL.takeIf { TelemetryParser.isValidKmL(it) }
         maxSpeed = 0.0
         gpsDistanceM = 0.0
         lastLocation = null
         startLat = null
         startLng = null
         route.clear()
-        afeSamples.clear()
-        if (afe in 1..99) afeSamples += afe
+        liveKmLSamples.clear()
+        // Do not seed the running average with a single stale pre-ride reading.
         preferences.setRideMode(true)
 
         val request = LocationRequest.Builder(Priority.PRIORITY_HIGH_ACCURACY, 2_000L)
@@ -157,8 +173,8 @@ class RideTracker(
             startFuelPercent = startFuel,
             endFuelPercent = latestFuel,
             tankCapacityLitres = tankCapacity,
-            clusterAfe = latestAfe,
-            afeSamples = afeSamples.toList(),
+            clusterAfe = latestLiveKmL,
+            afeSamples = liveKmLSamples.toList(),
             maxSpeedKmh = maxSpeed
         )
 
@@ -184,7 +200,7 @@ class RideTracker(
             endOdometerKm = latestOdo,
             startFuelPercent = startFuel,
             endFuelPercent = latestFuel,
-            clusterAfeKmL = latestAfe,
+            clusterAfeKmL = latestLiveKmL,
             approxKmPerLitre = metrics.approxKmPerLitre,
             estimatedLitresUsed = metrics.estimatedLitresUsed,
             economySource = metrics.economySource.name,
@@ -242,24 +258,8 @@ class RideTracker(
             gpsDistanceM / 1000.0
         )
         val durationMs = now - startTimeMs
-        val litres = RideStatsCalculator.estimateLitresUsed(
-            startFuelPercent = startFuel,
-            endFuelPercent = latestFuel,
-            tankCapacityLitres = tankCapacity
-        )
-        val tripKmL = if (litres != null && litres > 0.05 && distance > 0.05) {
-            distance / litres
-        } else {
-            null
-        }
-        // Cluster AFE is often a sticky single reading (e.g. always 40). Only treat
-        // sample average as meaningful when the cluster actually changed values.
-        val distinctAfe = afeSamples.filter { it in 1..99 }.toSet()
-        val avgAfe = if (distinctAfe.size >= 2) {
-            RideStatsCalculator.averageAfe(afeSamples)
-        } else {
-            null
-        }
+        // Trip km/L = running average of live samples only. No samples → N/A.
+        val tripKmL = RideStatsCalculator.averageAfe(liveKmLSamples)
         _activeRide.value = ActiveRideUi(
             startedAtMs = startTimeMs,
             distanceKm = distance,
@@ -269,8 +269,8 @@ class RideTracker(
             } ?: 0.0,
             avgSpeedKmh = RideStatsCalculator.averageSpeedKmh(distance, durationMs),
             fuelPercent = latestFuel,
-            afe = latestAfe,
-            avgAfe = avgAfe,
+            afe = latestLiveKmL,
+            avgAfe = tripKmL,
             tripKmPerLitre = tripKmL
         )
     }

@@ -104,11 +104,8 @@ fun DashboardScreen(
                     )
                     MetricTile(
                         "Trip km/L",
-                        when {
-                            ride.tripKmPerLitre != null -> "%.1f".format(ride.tripKmPerLitre)
-                            ride.avgAfe != null -> "%.1f".format(ride.avgAfe)
-                            else -> "—"
-                        } + " km/L",
+                        (ride.tripKmPerLitre?.takeIf { it > 0 }?.let { "%.1f".format(it) } ?: "—") +
+                            " km/L",
                         Modifier.weight(1f)
                     )
                 }
@@ -123,7 +120,11 @@ fun DashboardScreen(
         }
         Spacer(Modifier.height(10.dp))
         MetricRow {
-            MetricTile("Economy", "${ui.afe} km/L", Modifier.weight(1f))
+            MetricTile(
+                "Economy",
+                if (ui.afe in 1..99) "${ui.afe} km/L" else "— km/L",
+                Modifier.weight(1f)
+            )
             MetricTile("DTE", "${ui.dte} km", Modifier.weight(1f))
         }
 

@@ -57,6 +57,20 @@ class ClusterStatsRotatorTest {
     }
 
     @Test
+    fun fromLiveUsesFreshLiveAndTripAverageOnly() {
+        val snap = ClusterStatsRotator.fromLive(
+            ride = null,
+            liveKmL = null,
+            maps = MapsNavSnapshot.Empty
+        )
+        assertThat(snap.liveMileageKmL).isNull()
+        assertThat(snap.tripKmPerLitre).isNull()
+        val pages = ClusterStatsRotator.pages(snap)
+        assertThat(pages.first { it.first == "Live km/L:" }.second).isEqualTo("N/A")
+        assertThat(pages.first { it.first == "Trip km/L:" }.second).isEqualTo("N/A")
+    }
+
+    @Test
     fun sanitizeKeepsColonAndSlash() {
         assertThat(PacketBuilder.sanitizeClusterText("Maps ETA: 15m")).isEqualTo("Maps ETA: 15m")
         assertThat(PacketBuilder.sanitizeClusterText("48 km/L")).isEqualTo("48 km/L")

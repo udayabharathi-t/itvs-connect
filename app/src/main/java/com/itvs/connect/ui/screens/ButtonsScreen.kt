@@ -41,7 +41,7 @@ fun ButtonsScreen(
     ) {
         SectionHeader(
             "Button mapping",
-            "Map Cycle ride stats to a Voice gesture. It continuously feeds one value to the cluster (blocks Assist ready). Each press advances: Ride time → Ride km → Live km/L → Trip km/L → Avg speed → Maps ETA → Dist left. Enable Notification access for Maps values."
+            "Map Cycle ride stats to a Voice gesture. It continuously feeds one value to the cluster (blocks Assist ready). Each press advances: Ride time → Ride km → Live km/L → Trip km/L → Avg speed → Maps ETA → Dist left. Live/Trip km/L come from cluster economy packets (Trip = running average of Live; N/A until samples arrive). Enable Notification access for Maps values."
         )
 
         ActionPicker("Single tap", settings.singlePress) {
