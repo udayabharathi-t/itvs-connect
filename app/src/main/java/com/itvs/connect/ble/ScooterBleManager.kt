@@ -346,9 +346,11 @@ class ScooterBleManager(private val context: Context) {
         readChar = null
         connectAttemptMac = null
         hasSeenNormalCycle = false
+        // Emit Disconnected before clearing telemetry so the service finalizes the
+        // ride immediately and does not enter the soft telemetry-gap grace period.
+        _connectionState.value = ConnectionState.Disconnected
         _isTelemetryActive.value = false
         _statusMessage.value = ""
-        _connectionState.value = ConnectionState.Disconnected
     }
 
     private fun rememberDiscovered(device: BluetoothDevice, rssi: Int, fromBond: Boolean) {

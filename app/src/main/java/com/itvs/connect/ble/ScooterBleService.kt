@@ -49,6 +49,8 @@ class ScooterBleService : Service() {
 
     private var wakeLock: PowerManager.WakeLock? = null
     private var rideEndJob: Job? = null
+    /** Independent of collectLatest — must not be cancelled by connection-state churn. */
+    private var rideFinalizeJob: Job? = null
     private var flashClearJob: Job? = null
     private var autoReconnectJob: Job? = null
     private var callState: String = TelephonyManager.EXTRA_STATE_IDLE
@@ -132,6 +134,8 @@ class ScooterBleService : Service() {
                 userDisconnected = true
                 autoReconnectJob?.cancel()
                 autoReconnectJob = null
+                // Persist the ride before tearing down GATT — state collectors can race.
+                finalizeActiveRide(notifySaved = true)
                 ble.disconnect()
             }
             ACTION_STOP -> {
@@ -251,16 +255,15 @@ class ScooterBleService : Service() {
                     ConnectionState.Disconnected,
                     is ConnectionState.Failed -> {
                         statsRotator.stop()
-                        if (rideTracker.isActive()) {
-                            rideEndJob?.cancel()
-                            rideEndJob = null
-                            rideTracker.endRideIfNeeded()
-                            releaseWakeLock()
-                            notify("Ride saved · disconnected")
-                        }
+                        // Launch on service scope so collectLatest re-entries cannot cancel the save.
+                        val saveJob = finalizeActiveRide(notifySaved = true)
                         // Unexpected drop — keep trying if auto-connect is on.
+                        // Wait for ride persistence so a reconnect cannot race the snapshot.
                         if (!userDisconnected && settings.autoConnect && settings.scooterMac.isNotBlank()) {
-                            maybeStartAutoReconnect(reason = "disconnect")
+                            scope.launch {
+                                saveJob?.join()
+                                maybeStartAutoReconnect(reason = "disconnect")
+                            }
                         }
                     }
                     else -> Unit
@@ -287,16 +290,25 @@ class ScooterBleService : Service() {
                     }
                 } else if (rideTracker.isActive()) {
                     // Soft end: grace period in case of brief telemetry gaps while still connected.
-                    // Hard disconnect path above ends immediately.
+                    // Hard disconnect path finalizes immediately via finalizeActiveRide().
                     if (ble.connectionState.value is ConnectionState.Connected) {
                         rideEndJob?.cancel()
                         rideEndJob = scope.launch {
                             delay(BleConstants.RIDE_END_GRACE_MS)
-                            if (!ble.isTelemetryActive.value && rideTracker.isActive()) {
-                                rideTracker.endRideIfNeeded()
+                            if (!ble.isTelemetryActive.value &&
+                                ble.connectionState.value is ConnectionState.Connected &&
+                                rideTracker.isActive()
+                            ) {
+                                val saved = rideTracker.endRideIfNeeded()
                                 releaseWakeLock()
                                 statsRotator.stop()
-                                notify(getString(R.string.service_notification_title))
+                                notify(
+                                    if (saved != null) {
+                                        "Ride saved"
+                                    } else {
+                                        getString(R.string.service_notification_title)
+                                    }
+                                )
                             }
                         }
                     }
@@ -469,6 +481,27 @@ class ScooterBleService : Service() {
                 }
             }
         }
+    }
+
+    /**
+     * Persist an in-progress ride. Coalesces concurrent callers and runs on the
+     * service scope so [kotlinx.coroutines.flow.collectLatest] cancellation cannot
+     * abort the database write.
+     */
+    private fun finalizeActiveRide(notifySaved: Boolean): Job? {
+        rideEndJob?.cancel()
+        rideEndJob = null
+        rideFinalizeJob?.takeIf { it.isActive }?.let { return it }
+        if (!rideTracker.isActive()) return null
+        rideFinalizeJob = scope.launch {
+            val saved = rideTracker.endRideIfNeeded()
+            releaseWakeLock()
+            statsRotator.stop()
+            if (notifySaved && saved != null) {
+                notify("Ride saved · disconnected")
+            }
+        }
+        return rideFinalizeJob
     }
 
     private fun acquireWakeLock() {

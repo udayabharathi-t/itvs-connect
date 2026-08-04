@@ -7,6 +7,7 @@ import android.os.Build
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.suspendCancellableCoroutine
 import kotlinx.coroutines.withContext
+import kotlinx.coroutines.withTimeoutOrNull
 import java.util.Locale
 import kotlin.coroutines.resume
 
@@ -31,24 +32,30 @@ data class PlaceParts(
 class PlaceNameResolver(context: Context) {
     private val appContext = context.applicationContext
 
-    suspend fun resolve(lat: Double?, lng: Double?): String? {
+    suspend fun resolve(lat: Double?, lng: Double?, timeoutMs: Long = RESOLVE_TIMEOUT_MS): String? {
         if (lat == null || lng == null) return null
         if (lat !in -90.0..90.0 || lng !in -180.0..180.0) return null
-        return withContext(Dispatchers.IO) {
-            runCatching {
-                if (!Geocoder.isPresent()) return@runCatching null
-                val geocoder = Geocoder(appContext, Locale.getDefault())
-                val address = firstAddress(geocoder, lat, lng) ?: return@runCatching null
-                formatAddress(address)
-            }.getOrNull()?.takeIf { it.isNotBlank() }
+        return withTimeoutOrNull(timeoutMs) {
+            withContext(Dispatchers.IO) {
+                runCatching {
+                    if (!Geocoder.isPresent()) return@runCatching null
+                    val geocoder = Geocoder(appContext, Locale.getDefault())
+                    val address = firstAddress(geocoder, lat, lng) ?: return@runCatching null
+                    formatAddress(address)
+                }.getOrNull()?.takeIf { it.isNotBlank() }
+            }
         }
     }
 
     private suspend fun firstAddress(geocoder: Geocoder, lat: Double, lng: Double): Address? {
         return if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
             suspendCancellableCoroutine { cont ->
-                geocoder.getFromLocation(lat, lng, 1) { list ->
-                    if (cont.isActive) cont.resume(list.firstOrNull())
+                runCatching {
+                    geocoder.getFromLocation(lat, lng, 1) { list ->
+                        if (cont.isActive) cont.resume(list.firstOrNull())
+                    }
+                }.onFailure {
+                    if (cont.isActive) cont.resume(null)
                 }
             }
         } else {
@@ -58,6 +65,8 @@ class PlaceNameResolver(context: Context) {
     }
 
     companion object {
+        const val RESOLVE_TIMEOUT_MS = 3_000L
+
         fun fromAddress(address: Address) = PlaceParts(
             thoroughfare = address.thoroughfare,
             subThoroughfare = address.subThoroughfare,
