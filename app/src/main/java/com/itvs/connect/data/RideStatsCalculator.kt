@@ -136,13 +136,14 @@ object RideStatsCalculator {
         val distance = ordered.sumOf { it.distanceKm }
         val duration = ordered.sumOf { it.durationMs }
         val litres = ordered.mapNotNull { it.estimatedLitresUsed }.takeIf { it.isNotEmpty() }?.sum()
-        val afeSamples = ordered.mapNotNull { it.approxKmPerLitre?.toInt() }
-        val avgAfe = ordered.mapNotNull { it.approxKmPerLitre }.takeIf { it.isNotEmpty() }?.average()
+        val liveValues = ordered.mapNotNull { it.approxKmPerLitre }
+        val avgAfe = liveValues.takeIf { it.isNotEmpty() }?.average()
         val (kmL, source) = approxKmPerLitre(
             distanceKm = distance,
             litresUsed = litres,
             avgClusterAfe = avgAfe,
-            lastClusterAfe = last.clusterAfeKmL
+            lastClusterAfe = last.clusterAfeKmL,
+            liveSampleCount = liveValues.size
         )
         return RideEntity(
             startTimeMs = first.startTimeMs,
