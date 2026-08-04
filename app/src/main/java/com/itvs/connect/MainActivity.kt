@@ -54,13 +54,13 @@ class MainActivity : ComponentActivity() {
     private val connection = object : ServiceConnection {
         override fun onServiceConnected(name: ComponentName?, service: IBinder?) {
             val binder = service as ScooterBleService.LocalBinder
-            vm.bindTracker(binder.getService().tracker())
+            vm.bindService(binder.getService())
             bound = true
         }
 
         override fun onServiceDisconnected(name: ComponentName?) {
             bound = false
-            vm.bindTracker(null)
+            vm.bindService(null)
         }
     }
 
@@ -185,7 +185,9 @@ private fun AppRoot(vm: AppViewModel) {
                     onDisconnect = vm::disconnect,
                     onFindMe = vm::findMe,
                     onDropPin = vm::dropPin,
-                    onConnectMac = vm::connectMac
+                    onConnectMac = vm::connectMac,
+                    onShowClusterPage = vm::showClusterPage,
+                    onStopClusterHud = vm::stopClusterHud
                 )
             }
             composable("rides") {

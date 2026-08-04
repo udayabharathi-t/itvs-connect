@@ -149,6 +149,15 @@ class ScooterBleService : Service() {
                     if (r1.isNotBlank()) flashCluster(r1, r2)
                 }
             }
+            ACTION_SHOW_STATS_PAGE -> {
+                val page = intent.getIntExtra(EXTRA_PAGE, 0)
+                val label = statsRotator.showPage(page)
+                notify("Stats · $label")
+            }
+            ACTION_STOP_STATS_HUD -> {
+                statsRotator.stop()
+                notify(getString(R.string.service_notification_title))
+            }
             null -> scope.launch {
                 settings = prefs.settings.first()
                 maybeStartAutoReconnect(reason = "sticky-restart")
@@ -172,6 +181,18 @@ class ScooterBleService : Service() {
 
     fun manager(): ScooterBleManager = ble
     fun tracker(): RideTracker = rideTracker
+    fun isStatsHudRunning(): Boolean = statsRotator.isRunning
+    fun currentStatsPageIndex(): Int = statsRotator.currentIndex
+
+    fun showStatsPage(pageIndex: Int): String {
+        val label = statsRotator.showPage(pageIndex)
+        notify("Stats · $label")
+        return label
+    }
+
+    fun stopStatsHud() {
+        statsRotator.stop()
+    }
 
     @Suppress("UNUSED_PARAMETER")
     private fun maybeStartAutoReconnect(reason: String) {
@@ -325,8 +346,8 @@ class ScooterBleService : Service() {
                 prefs.persistTelemetry(
                     fuel = ble.fuelLevel.value,
                     odo = ble.odometer.value,
-                    afe = ble.liveFuelEconomy.value.takeIf { it in 1..99 }
-                        ?: ble.averageFuelEconomy.value,
+                    afe = ble.averageFuelEconomy.value.takeIf { it in 1..99 }
+                        ?: ble.liveFuelEconomy.value,
                     dte = ble.distanceToEmpty.value
                 )
                 if (rideTracker.isActive()) {
@@ -572,9 +593,12 @@ class ScooterBleService : Service() {
         const val ACTION_DISCONNECT = "com.itvs.connect.action.DISCONNECT"
         const val ACTION_STOP = "com.itvs.connect.action.STOP"
         const val ACTION_CLUSTER_MESSAGE = "com.itvs.connect.action.CLUSTER_MESSAGE"
+        const val ACTION_SHOW_STATS_PAGE = "com.itvs.connect.action.SHOW_STATS_PAGE"
+        const val ACTION_STOP_STATS_HUD = "com.itvs.connect.action.STOP_STATS_HUD"
         const val EXTRA_ROW1 = "row1"
         const val EXTRA_ROW2 = "row2"
         const val EXTRA_MAC = "mac"
+        const val EXTRA_PAGE = "page"
 
         private const val CHANNEL_CONN = "scooter_conn"
         private const val CHANNEL_RIDE = "scooter_ride"
@@ -583,6 +607,13 @@ class ScooterBleService : Service() {
         fun start(context: Context, action: String? = null) {
             val intent = Intent(context, ScooterBleService::class.java)
             if (action != null) intent.action = action
+            context.startForegroundService(intent)
+        }
+
+        fun startShowStatsPage(context: Context, pageIndex: Int) {
+            val intent = Intent(context, ScooterBleService::class.java)
+                .setAction(ACTION_SHOW_STATS_PAGE)
+                .putExtra(EXTRA_PAGE, pageIndex)
             context.startForegroundService(intent)
         }
     }

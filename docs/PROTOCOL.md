@@ -33,7 +33,7 @@ Byte 17 = `1` triggers Find Me (horn/lights). Heartbeat every 2s.
 | `0x10` | Odo u24@3-5 `/10` km; fuel bars nibble@6; call cmd@13 |
 | `0x11` | Service reminder@4 (ignition marker) |
 | `0x18` | Ignition marker (no payload parse) |
-| `0x19` | IFE km/L@7 (when valid); AFE km/L@8; DTE u16@11-12. Live HUD prefers IFE, else AFE. Invalid/0 → no live sample (N/A). |
+| `0x19` | IFE km/L@7 (when valid and ≠ AFE); AFE km/L@8 (cluster average — sticky); DTE u16@11-12. Live/Trip never use sticky AFE; variance probe may pick other IFE-like bytes. Invalid/0/sticky-only → N/A. |
 | `0x54` | Music command@2 |
 | `0x6B` | Dialer command@2 |
 

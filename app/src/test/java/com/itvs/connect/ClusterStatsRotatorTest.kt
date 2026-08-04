@@ -127,4 +127,23 @@ class ClusterStatsRotatorTest {
         assertThat(MapsNavParser.isMapsPackage("com.google.android.apps.maps")).isTrue()
         assertThat(MapsNavParser.isMapsPackage("com.whatsapp")).isFalse()
     }
+
+    @Test
+    fun mapsParserHandlesCompactGluedTokens() {
+        val snap = MapsNavParser.parse("15min·4.2km·4:32PM")
+        assertThat(snap.etaText).isEqualTo("4:32PM")
+        assertThat(snap.remainingDistanceText).isEqualTo("4.2 km")
+    }
+
+    @Test
+    fun mapsParserHandlesLeftDistance() {
+        val snap = MapsNavParser.parse("left 3.5 km", "ETA 6:15 PM")
+        assertThat(snap.etaText).contains("6:15")
+        assertThat(snap.remainingDistanceText).isEqualTo("3.5 km")
+    }
+
+    @Test
+    fun pageLabelsMatchPageCount() {
+        assertThat(ClusterStatsRotator.PAGE_LABELS).hasSize(ClusterStatsRotator.PAGE_COUNT)
+    }
 }

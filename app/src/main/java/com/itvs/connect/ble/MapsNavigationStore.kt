@@ -59,13 +59,13 @@ object MapsNavigationStore {
  */
 object MapsNavParser {
 
-    private val SPLIT = Regex("""\s*[·•|—–\-]\s*""")
+    private val SPLIT = Regex("""\s*[·•|—–\-/]\s*""")
 
     private val CLOCK_ETA = Regex(
-        """\b(\d{1,2}[:.]\d{2}\s*(?:AM|PM|am|pm)?)\b"""
+        """\b(\d{1,2}[:.]\d{2}\s*(?:AM|PM|am|pm|ص|م)?)\b"""
     )
     private val DURATION_HM = Regex(
-        """\b(\d{1,2})\s*h(?:r|ours?)?\s*(\d{1,2})\s*m(?:in|ins?)?\b""",
+        """\b(\d{1,2})\s*h(?:r|rs|ours?)?\s*(\d{1,2})\s*m(?:in|ins?)?\b""",
         RegexOption.IGNORE_CASE
     )
     private val DURATION_H_ONLY = Regex(
@@ -76,12 +76,24 @@ object MapsNavParser {
         """\b(\d{1,3})\s*(?:min|mins|minute|minutes)\b""",
         RegexOption.IGNORE_CASE
     )
+    /** Compact glued forms: 15min, 4.2km */
+    private val DURATION_MIN_COMPACT = Regex(
+        """\b(\d{1,3})(?:min|mins)\b""",
+        RegexOption.IGNORE_CASE
+    )
     private val DIST = Regex(
         """\b(\d+(?:[.,]\d+)?)\s*(km|mi|m|kilometers?|kilometres?|miles?|meters?|metres?)\b""",
         RegexOption.IGNORE_CASE
     )
+    private val DIST_COMPACT = Regex(
+        """\b(\d+(?:[.,]\d+)?)(km|mi)\b""",
+        RegexOption.IGNORE_CASE
+    )
     private val ARRIVE_BY = Regex(
-        """(?i)(?:arrive(?:\s+by)?|eta)[:\s]+(\d{1,2}[:.]\d{2}\s*(?:AM|PM|am|pm)?)"""
+        """(?i)(?:arrive(?:\s+by)?|eta|arrival)[:\s]*(\d{1,2}[:.]\d{2}\s*(?:AM|PM|am|pm)?)"""
+    )
+    private val LEFT_DIST = Regex(
+        """(?i)(?:left|remaining)[:\s]*(\d+(?:[.,]\d+)?)\s*(km|mi|m)\b"""
     )
 
     fun parse(vararg parts: String?): MapsNavSnapshot {
@@ -106,6 +118,13 @@ object MapsNavParser {
         }
         eta = eta ?: extractEta(blob)
         distance = distance ?: extractDistance(blob)
+        // Last resort: scan each line independently for glued compact tokens.
+        if (eta == null || distance == null) {
+            for (line in cleaned) {
+                if (eta == null) eta = extractEta(line)
+                if (distance == null) distance = extractDistance(line)
+            }
+        }
         if (eta == null && distance == null) return MapsNavSnapshot.Empty
 
         return MapsNavSnapshot(
@@ -136,11 +155,17 @@ object MapsNavParser {
                 duration == null && DURATION_MIN.containsMatchIn(part) -> {
                     duration = "${DURATION_MIN.find(part)!!.groupValues[1]}m"
                 }
+                duration == null && DURATION_MIN_COMPACT.containsMatchIn(part) -> {
+                    duration = "${DURATION_MIN_COMPACT.find(part)!!.groupValues[1]}m"
+                }
                 duration == null && DURATION_H_ONLY.containsMatchIn(part) -> {
                     duration = "${DURATION_H_ONLY.find(part)!!.groupValues[1]}h"
                 }
                 distance == null && DIST.containsMatchIn(part) -> {
                     distance = normalizeDistance(DIST.find(part)!!)
+                }
+                distance == null && DIST_COMPACT.containsMatchIn(part) -> {
+                    distance = normalizeDistance(DIST_COMPACT.find(part)!!)
                 }
                 clock == null && CLOCK_ETA.containsMatchIn(part) -> {
                     clock = CLOCK_ETA.find(part)!!.groupValues[1].trim()
@@ -160,14 +185,19 @@ object MapsNavParser {
             return "${m.groupValues[1]}h ${m.groupValues[2]}m"
         }
         DURATION_MIN.find(blob)?.groupValues?.getOrNull(1)?.let { return "${it}m" }
+        DURATION_MIN_COMPACT.find(blob)?.groupValues?.getOrNull(1)?.let { return "${it}m" }
         DURATION_H_ONLY.find(blob)?.groupValues?.getOrNull(1)?.let { return "${it}h" }
         return null
     }
 
     private fun extractDistance(blob: String): String? {
+        LEFT_DIST.find(blob)?.let { m ->
+            normalizeDistance(m)?.let { return it }
+        }
         // Prefer km/mi over bare meters
         var best: Pair<Double, String>? = null
-        for (m in DIST.findAll(blob)) {
+        val matches = DIST.findAll(blob) + DIST_COMPACT.findAll(blob)
+        for (m in matches) {
             val normalized = normalizeDistance(m) ?: continue
             val value = m.groupValues[1].replace(',', '.').toDoubleOrNull() ?: continue
             val unit = m.groupValues[2].lowercase()

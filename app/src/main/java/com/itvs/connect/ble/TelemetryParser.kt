@@ -13,8 +13,9 @@ data class TelemetrySnapshot(
      */
     val instantFuelEconomy: Int? = null,
     /**
-     * Best live km/L for HUD: IFE when valid, otherwise AFE when valid.
-     * Null means no readable economy in this packet.
+     * Best live km/L for HUD from a single packet: IFE only (never sticky AFE).
+     * Null means no readable instantaneous economy in this packet.
+     * [ScooterBleManager] may further refine via [LiveEconomyProbe].
      */
     val liveFuelEconomy: Int? = null,
     val distanceToEmptyKm: Int? = null,
@@ -82,11 +83,12 @@ object TelemetryParser {
 
     /**
      * Economy packet `0x19`:
-     * - documented AFE at byte 8
+     * - documented AFE at byte 8 (cluster trip average — sticky, not Live)
      * - IFE commonly adjacent at byte 7 (some firmware variants use byte 9)
      * - DTE u16 at bytes 11-12
      *
      * Cluster IFE is blank below ~10 km/h; those packets send 0 / out-of-range → null.
+     * Live never falls back to AFE — sticky AFE (~40) previously poisoned Live/Trip.
      */
     fun parseEconomy(data: ByteArray): TelemetrySnapshot? {
         if (data.size < 14) return null
@@ -95,20 +97,18 @@ object TelemetryParser {
         val b9 = data[9].toInt() and 0xFF
 
         val afe = b8.takeIf { isValidKmL(it) }
-        // Instantaneous economy: prefer byte 7, then a differing byte 9.
-        // When IFE equals AFE that is still a valid live reading.
+        // Instantaneous economy: prefer byte 7 when it differs from sticky AFE,
+        // then a differing byte 9. Equal-to-AFE fills are treated as unused.
         val ife = when {
-            isValidKmL(b7) -> b7
+            isValidKmL(b7) && (afe == null || b7 != afe) -> b7
             isValidKmL(b9) && (afe == null || b9 != afe) -> b9
             else -> null
         }
-        // Live for HUD/sampling: IFE when present, else AFE from the same packet.
-        val live = ife ?: afe
         val dte = ((data[11].toInt() and 0xFF) shl 8) or (data[12].toInt() and 0xFF)
         return TelemetrySnapshot(
             averageFuelEconomy = afe,
             instantFuelEconomy = ife,
-            liveFuelEconomy = live,
+            liveFuelEconomy = ife,
             distanceToEmptyKm = dte,
             isIgnitionTelemetry = true
         )
