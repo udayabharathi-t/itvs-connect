@@ -5,6 +5,8 @@ import android.os.Handler
 import android.os.Looper
 import android.service.notification.NotificationListenerService
 import android.service.notification.StatusBarNotification
+import android.util.Log
+import com.itvs.connect.data.PreferencesRepository
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
@@ -14,7 +16,7 @@ import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.isActive
 import kotlinx.coroutines.launch
-import com.itvs.connect.data.PreferencesRepository
+import java.lang.ref.WeakReference
 
 /**
  * Mirrors selected app notifications onto the scooter cluster (17-char rows).
@@ -32,28 +34,36 @@ class NotificationMirrorService : NotificationListenerService() {
     override fun onCreate() {
         super.onCreate()
         prefs = PreferencesRepository(this)
+        instanceRef = WeakReference(this)
     }
 
     override fun onListenerConnected() {
         super.onListenerConnected()
+        instanceRef = WeakReference(this)
+        Log.i(TAG, "Notification listener connected")
         pollMapsNow()
         pollJob?.cancel()
         pollJob = scope.launch {
             while (isActive) {
-                delay(5_000)
+                // Faster while ride-stats HUD is requesting Maps values.
+                val interval = if (fastPollRequested) 2_000L else 5_000L
+                delay(interval)
                 pollMapsNow()
             }
         }
     }
 
     override fun onListenerDisconnected() {
+        Log.w(TAG, "Notification listener disconnected")
         pollJob?.cancel()
         pollJob = null
+        if (instanceRef?.get() === this) instanceRef = null
         super.onListenerDisconnected()
     }
 
     override fun onDestroy() {
         pollJob?.cancel()
+        if (instanceRef?.get() === this) instanceRef = null
         scope.cancel()
         super.onDestroy()
     }
@@ -117,6 +127,25 @@ class NotificationMirrorService : NotificationListenerService() {
         val snap = MapsNotificationHarvester.harvest(this, sbn)
         if (snap.etaText != null || snap.remainingDistanceText != null) {
             MapsNavigationStore.update(snap)
+        }
+    }
+
+    companion object {
+        private const val TAG = "NotifMirror"
+        @Volatile
+        private var instanceRef: WeakReference<NotificationMirrorService>? = null
+        @Volatile
+        private var fastPollRequested: Boolean = false
+
+        /** Ask the listener to poll Maps immediately (no-op if not connected). */
+        fun requestMapsPoll() {
+            instanceRef?.get()?.pollMapsNow()
+        }
+
+        /** While ride-stats HUD is active, poll Maps every 2s instead of 5s. */
+        fun setFastMapsPoll(enabled: Boolean) {
+            fastPollRequested = enabled
+            if (enabled) requestMapsPoll()
         }
     }
 }

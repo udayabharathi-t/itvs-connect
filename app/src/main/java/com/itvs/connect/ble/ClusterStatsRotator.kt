@@ -30,6 +30,8 @@ class ClusterStatsRotator(
     /** Start continuous feed on the first page (or keep current index). */
     fun start(resetIndex: Boolean = true) {
         if (resetIndex) index = 0
+        NotificationMirrorService.setFastMapsPoll(true)
+        NotificationMirrorService.requestMapsPoll()
         if (job?.isActive == true) {
             // Already feeding — push current page immediately.
             pushCurrent()
@@ -37,6 +39,7 @@ class ClusterStatsRotator(
         }
         job = scope.launch {
             while (isActive) {
+                NotificationMirrorService.requestMapsPoll()
                 pushCurrent()
                 delay(refreshMs)
             }
@@ -47,6 +50,7 @@ class ClusterStatsRotator(
         job?.cancel()
         job = null
         index = 0
+        NotificationMirrorService.setFastMapsPoll(false)
     }
 
     /**
