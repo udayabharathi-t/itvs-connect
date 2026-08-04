@@ -11,10 +11,15 @@ import com.google.android.gms.location.LocationServices
 import com.google.android.gms.location.Priority
 import com.google.gson.Gson
 import com.itvs.connect.ble.TelemetryParser
+import kotlinx.coroutines.NonCancellable
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
+import kotlinx.coroutines.sync.Mutex
+import kotlinx.coroutines.sync.withLock
 import kotlinx.coroutines.tasks.await
+import kotlinx.coroutines.withContext
+import kotlinx.coroutines.withTimeoutOrNull
 
 /**
  * Auto-tracks rides when scooter ignition telemetry becomes active.
@@ -46,6 +51,7 @@ class RideTracker(
     /** Live km/L samples for trip running average (only when ride is active). */
     private val liveKmLSamples = mutableListOf<Int>()
     private var tankCapacity = 5.1
+    private val endRideMutex = Mutex()
 
     private val _activeRide = MutableStateFlow<ActiveRideUi?>(null)
     val activeRide: StateFlow<ActiveRideUi?> = _activeRide.asStateFlow()
@@ -149,78 +155,112 @@ class RideTracker(
         publishActive()
     }
 
-    suspend fun endRideIfNeeded(): RideEntity? {
-        if (!active) return null
-        active = false
-        runCatching { fused.removeLocationUpdates(locationCallback) }
-        preferences.setRideMode(false)
-
-        // Prefer a fresh high-accuracy fix for end/parked pin.
-        val endFix = runCatching {
-            fused.getCurrentLocation(Priority.PRIORITY_HIGH_ACCURACY, null).await()
-        }.getOrNull() ?: lastLocation
-        if (endFix != null) {
-            lastLocation = endFix
-        }
-
-        val endTime = System.currentTimeMillis()
-        val metrics = RideStatsCalculator.compute(
-            startOdo = startOdo,
-            endOdo = latestOdo,
-            gpsDistanceKm = gpsDistanceM / 1000.0,
-            startTimeMs = startTimeMs,
-            endTimeMs = endTime,
-            startFuelPercent = startFuel,
-            endFuelPercent = latestFuel,
-            tankCapacityLitres = tankCapacity,
-            clusterAfe = latestLiveKmL,
-            afeSamples = liveKmLSamples.toList(),
-            maxSpeedKmh = maxSpeed
-        )
-
-        // Ignore tiny ghost rides (ignition blips)
-        if (metrics.distanceKm < 0.05 && metrics.durationMs < 60_000L) {
+    /**
+     * Finalize the active ride and persist it.
+     *
+     * Runs under [NonCancellable] after snapshotting so disconnect / collectLatest
+     * cancellations cannot drop the save mid-flight. Location + geocoder calls are
+     * time-bounded so a hung GPS/geocoder cannot block persistence forever.
+     */
+    suspend fun endRideIfNeeded(): RideEntity? = withContext(NonCancellable) {
+        endRideMutex.withLock {
+            if (!active) return@withLock null
+            active = false
             _activeRide.value = null
-            return null
+            runCatching { fused.removeLocationUpdates(locationCallback) }
+            runCatching { preferences.setRideMode(false) }
+
+            // Snapshot mutable ride state immediately so a new ride can start safely.
+            val snapStartTime = startTimeMs
+            val snapStartOdo = startOdo
+            val snapEndOdo = latestOdo
+            val snapStartFuel = startFuel
+            val snapEndFuel = latestFuel
+            val snapLiveKmL = latestLiveKmL
+            val snapSamples = liveKmLSamples.toList()
+            val snapMaxSpeed = maxSpeed
+            val snapGpsKm = gpsDistanceM / 1000.0
+            val snapTank = tankCapacity
+            val snapStartLat = startLat
+            val snapStartLng = startLng
+            val snapRouteJson = gson.toJson(route)
+            var snapEndLat = lastLocation?.latitude
+            var snapEndLng = lastLocation?.longitude
+
+            // Brief attempt at a fresher end pin; never block save on GPS.
+            val endFix = withTimeoutOrNull(END_FIX_TIMEOUT_MS) {
+                runCatching {
+                    fused.getCurrentLocation(Priority.PRIORITY_HIGH_ACCURACY, null).await()
+                }.getOrNull()
+            } ?: lastLocation
+            if (endFix != null) {
+                snapEndLat = endFix.latitude
+                snapEndLng = endFix.longitude
+            }
+
+            val endTime = System.currentTimeMillis()
+            val metrics = RideStatsCalculator.compute(
+                startOdo = snapStartOdo,
+                endOdo = snapEndOdo,
+                gpsDistanceKm = snapGpsKm,
+                startTimeMs = snapStartTime,
+                endTimeMs = endTime,
+                startFuelPercent = snapStartFuel,
+                endFuelPercent = snapEndFuel,
+                tankCapacityLitres = snapTank,
+                clusterAfe = snapLiveKmL,
+                afeSamples = snapSamples,
+                maxSpeedKmh = snapMaxSpeed
+            )
+
+            // Ignore tiny ghost rides (ignition blips)
+            if (metrics.distanceKm < 0.05 && metrics.durationMs < 60_000L) {
+                return@withLock null
+            }
+
+            // Best-effort labels; save even if geocoder is slow/unavailable.
+            val startPlace = placeNames.resolve(snapStartLat, snapStartLng)
+            val endPlace = placeNames.resolve(snapEndLat, snapEndLng)
+
+            val entity = RideEntity(
+                startTimeMs = snapStartTime,
+                endTimeMs = endTime,
+                durationMs = metrics.durationMs,
+                distanceKm = metrics.distanceKm,
+                startOdometerKm = snapStartOdo,
+                endOdometerKm = snapEndOdo,
+                startFuelPercent = snapStartFuel,
+                endFuelPercent = snapEndFuel,
+                clusterAfeKmL = snapLiveKmL,
+                approxKmPerLitre = metrics.approxKmPerLitre,
+                estimatedLitresUsed = metrics.estimatedLitresUsed,
+                economySource = metrics.economySource.name,
+                avgSpeedKmh = metrics.avgSpeedKmh,
+                maxSpeedKmh = snapMaxSpeed,
+                startLat = snapStartLat,
+                startLng = snapStartLng,
+                endLat = snapEndLat,
+                endLng = snapEndLng,
+                routeJson = snapRouteJson,
+                startPlaceName = startPlace,
+                endPlaceName = endPlace
+            )
+            val id = database.rideDao().insert(entity)
+
+            if (snapEndLat != null && snapEndLng != null) {
+                saveSingleParkedLocation(
+                    snapEndLat,
+                    snapEndLng,
+                    isManual = false,
+                    placeName = endPlace
+                )
+            }
+            entity.copy(id = id)
         }
+    }
 
-        val endLat = lastLocation?.latitude
-        val endLng = lastLocation?.longitude
-
-        // Resolve place names before insert so the first list paint already has labels.
-        val startPlace = placeNames.resolve(startLat, startLng)
-        val endPlace = placeNames.resolve(endLat, endLng)
-
-        val entity = RideEntity(
-            startTimeMs = startTimeMs,
-            endTimeMs = endTime,
-            durationMs = metrics.durationMs,
-            distanceKm = metrics.distanceKm,
-            startOdometerKm = startOdo,
-            endOdometerKm = latestOdo,
-            startFuelPercent = startFuel,
-            endFuelPercent = latestFuel,
-            clusterAfeKmL = latestLiveKmL,
-            approxKmPerLitre = metrics.approxKmPerLitre,
-            estimatedLitresUsed = metrics.estimatedLitresUsed,
-            economySource = metrics.economySource.name,
-            avgSpeedKmh = metrics.avgSpeedKmh,
-            maxSpeedKmh = maxSpeed,
-            startLat = startLat,
-            startLng = startLng,
-            endLat = endLat,
-            endLng = endLng,
-            routeJson = gson.toJson(route),
-            startPlaceName = startPlace,
-            endPlaceName = endPlace
-        )
-        val id = database.rideDao().insert(entity)
-        _activeRide.value = null
-
-        if (endLat != null && endLng != null) {
-            saveSingleParkedLocation(endLat, endLng, isManual = false, placeName = endPlace)
-        }
-        return entity.copy(id = id)
+    companion object {
+        private const val END_FIX_TIMEOUT_MS = 2_500L
     }
 
     fun isActive(): Boolean = active

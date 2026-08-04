@@ -3,6 +3,7 @@ package com.itvs.connect.ui
 import android.app.Application
 import androidx.lifecycle.AndroidViewModel
 import androidx.lifecycle.viewModelScope
+import com.itvs.connect.ble.ClusterStatsRotator
 import com.itvs.connect.ble.ConnectionState
 import com.itvs.connect.ble.ScooterBleManager
 import com.itvs.connect.ble.ScooterBleService
@@ -13,9 +14,10 @@ import com.itvs.connect.data.RideEntity
 import com.itvs.connect.data.RideStatsCalculator
 import com.itvs.connect.data.RideTracker
 import com.itvs.connect.data.SavedPlaceEntity
+import kotlinx.coroutines.Job
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.SharingStarted
 import kotlinx.coroutines.flow.StateFlow
-import kotlinx.coroutines.flow.combine
 import kotlinx.coroutines.flow.stateIn
 import kotlinx.coroutines.launch
 
@@ -33,7 +35,9 @@ data class DashboardUi(
     val totalDistanceKm: Double = 0.0,
     val avgEconomy: Double? = null,
     val discovered: List<com.itvs.connect.ble.DiscoveredDevice> = emptyList(),
-    val statusMessage: String = ""
+    val statusMessage: String = "",
+    val clusterPageIndex: Int = 0,
+    val clusterHudRunning: Boolean = false
 )
 
 class AppViewModel(app: Application) : AndroidViewModel(app) {
@@ -54,12 +58,17 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
 
     private val _activeRide = kotlinx.coroutines.flow.MutableStateFlow<RideTracker.ActiveRideUi?>(null)
 
+    private val _clusterPageIndex = kotlinx.coroutines.flow.MutableStateFlow(0)
+    private val _clusterHudRunning = kotlinx.coroutines.flow.MutableStateFlow(false)
+    private var boundService: ScooterBleService? = null
+    private var activeRideCollectJob: Job? = null
+
     val dashboard: StateFlow<DashboardUi> = kotlinx.coroutines.flow.combine(
         listOf(
             ble.connectionState,
             ble.fuelLevel,
             ble.odometer,
-            ble.liveFuelEconomy,
+            ble.averageFuelEconomy,
             ble.distanceToEmpty,
             ble.serviceReminder,
             ble.isPinging,
@@ -69,7 +78,9 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
             db.rideDao().observeTotalDistance(),
             db.rideDao().observeAverageEconomy(),
             ble.discoveredDevices,
-            ble.statusMessage
+            ble.statusMessage,
+            _clusterPageIndex,
+            _clusterHudRunning
         )
     ) { values ->
         DashboardUi(
@@ -86,15 +97,54 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
             totalDistanceKm = values[10] as Double,
             avgEconomy = values[11] as Double?,
             discovered = values[12] as List<com.itvs.connect.ble.DiscoveredDevice>,
-            statusMessage = values[13] as String
+            statusMessage = values[13] as String,
+            clusterPageIndex = values[14] as Int,
+            clusterHudRunning = values[15] as Boolean
         )
     }.stateIn(viewModelScope, SharingStarted.Eagerly, DashboardUi())
 
+    fun bindService(service: ScooterBleService?) {
+        boundService = service
+        boundTracker = service?.tracker()
+        activeRideCollectJob?.cancel()
+        if (service == null) {
+            _activeRide.value = null
+            _clusterHudRunning.value = false
+            return
+        }
+        activeRideCollectJob = viewModelScope.launch {
+            service.tracker().activeRide.collect { _activeRide.value = it }
+        }
+        refreshClusterHudState()
+    }
+
     fun bindTracker(tracker: RideTracker?) {
         boundTracker = tracker
-        viewModelScope.launch {
+        activeRideCollectJob?.cancel()
+        activeRideCollectJob = viewModelScope.launch {
             tracker?.activeRide?.collect { _activeRide.value = it }
         }
+    }
+
+    fun refreshClusterHudState() {
+        val svc = boundService ?: return
+        _clusterHudRunning.value = svc.isStatsHudRunning()
+        _clusterPageIndex.value = svc.currentStatsPageIndex()
+    }
+
+    fun showClusterPage(index: Int) {
+        ScooterBleService.startShowStatsPage(getApplication(), index)
+        _clusterHudRunning.value = true
+        _clusterPageIndex.value = index.coerceIn(0, ClusterStatsRotator.PAGE_COUNT - 1)
+        viewModelScope.launch {
+            delay(150)
+            refreshClusterHudState()
+        }
+    }
+
+    fun stopClusterHud() {
+        ScooterBleService.start(getApplication(), ScooterBleService.ACTION_STOP_STATS_HUD)
+        _clusterHudRunning.value = false
     }
 
     fun startService() {

@@ -98,6 +98,7 @@ class PacketBuilderTest {
         val afeSnap = TelemetryParser.parse(afeOnly)!!
         assertThat(afeSnap.instantFuelEconomy).isNull()
         assertThat(afeSnap.averageFuelEconomy).isEqualTo(40)
-        assertThat(afeSnap.liveFuelEconomy).isEqualTo(40)
+        // Sticky AFE must not become Live — that produced constant 40.0 readings.
+        assertThat(afeSnap.liveFuelEconomy).isNull()
     }
 }

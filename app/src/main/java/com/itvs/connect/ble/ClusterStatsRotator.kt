@@ -69,6 +69,22 @@ class ClusterStatsRotator(
         return pages(provider()).getOrElse(index) { "Stats" to "N/A" }.first
     }
 
+    /**
+     * Jump to a specific page from the phone UI. Starts continuous feed if needed.
+     * @return label of the page now shown
+     */
+    fun showPage(pageIndex: Int): String {
+        val list = pages(provider())
+        val pageCount = list.size.coerceAtLeast(1)
+        index = pageIndex.mod(pageCount)
+        if (!isRunning) {
+            start(resetIndex = false)
+        } else {
+            pushCurrent()
+        }
+        return list.getOrElse(index) { "Stats" to "N/A" }.first
+    }
+
     fun toggle(): Boolean {
         return if (isRunning) {
             stop()
@@ -101,6 +117,17 @@ class ClusterStatsRotator(
         /** Keep rewriting the cluster so Assist ready / native economy do not return. */
         const val REFRESH_MS = 2_000L
         const val PAGE_COUNT = 7
+
+        /** Short labels for the phone-side page picker (order matches [pages]). */
+        val PAGE_LABELS = listOf(
+            "Ride time",
+            "Ride km",
+            "Live km/L",
+            "Trip km/L",
+            "Avg speed",
+            "Maps ETA",
+            "Dist left"
+        )
 
         fun pages(s: StatsSnapshot): List<Pair<String, String>> {
             val rideTime = s.rideDurationMs?.let { Formatters.durationHoursMinutes(it) } ?: "N/A"

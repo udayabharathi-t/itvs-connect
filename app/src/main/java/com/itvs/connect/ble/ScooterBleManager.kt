@@ -90,7 +90,7 @@ class ScooterBleManager(private val context: Context) {
     private val _averageFuelEconomy = MutableStateFlow(0)
     val averageFuelEconomy: StateFlow<Int> = _averageFuelEconomy.asStateFlow()
 
-    /** Best live km/L from latest economy packet (IFE preferred, else AFE). 0 = none. */
+    /** Best live km/L from latest economy packet (IFE / variance probe only — never sticky AFE). 0 = none. */
     private val _liveFuelEconomy = MutableStateFlow(0)
     val liveFuelEconomy: StateFlow<Int> = _liveFuelEconomy.asStateFlow()
 
@@ -346,9 +346,14 @@ class ScooterBleManager(private val context: Context) {
         readChar = null
         connectAttemptMac = null
         hasSeenNormalCycle = false
+        LiveEconomyProbe.reset()
+        _liveFuelEconomy.value = 0
+        _liveEconomyUpdatedAtMs.value = 0L
+        // Emit Disconnected before clearing telemetry so the service finalizes the
+        // ride immediately and does not enter the soft telemetry-gap grace period.
+        _connectionState.value = ConnectionState.Disconnected
         _isTelemetryActive.value = false
         _statusMessage.value = ""
-        _connectionState.value = ConnectionState.Disconnected
     }
 
     private fun rememberDiscovered(device: BluetoothDevice, rssi: Int, fromBond: Boolean) {
@@ -575,21 +580,26 @@ class ScooterBleManager(private val context: Context) {
         snapshot.odometerKm?.let { _odometer.value = it }
         snapshot.fuelPercent?.let { _fuelLevel.value = it }
         snapshot.averageFuelEconomy?.let { _averageFuelEconomy.value = it }
-        // Economy packet with no valid live (IFE/-- at low speed and empty AFE):
-        // clear live so HUD shows N/A instead of a sticky leftover.
+        // Live km/L: variance probe across economy bytes, never sticky AFE@8.
+        // No moving IFE-like byte → clear live so HUD/Trip show N/A (not a constant 40).
         if (dataId == BleConstants.DATA_ID_ECONOMY) {
-            val live = snapshot.liveFuelEconomy
+            val probe = LiveEconomyProbe.observe(data)
+            val live = probe.liveKmL ?: snapshot.liveFuelEconomy
             if (live != null) {
                 _liveFuelEconomy.value = live
                 _liveEconomyUpdatedAtMs.value = now
                 _liveEconomySamples.tryEmit(live)
                 Log.d(
                     TAG,
-                    "Economy live=$live ife=${snapshot.instantFuelEconomy} afe=${snapshot.averageFuelEconomy}"
+                    "Economy live=$live ife=${snapshot.instantFuelEconomy} " +
+                        "afe=${snapshot.averageFuelEconomy} probe=${probe.debug}"
                 )
             } else {
                 _liveFuelEconomy.value = 0
                 _liveEconomyUpdatedAtMs.value = 0L
+                if (probe.debug.isNotBlank()) {
+                    Log.d(TAG, "Economy no-live afe=${snapshot.averageFuelEconomy} probe=${probe.debug}")
+                }
             }
         }
         snapshot.distanceToEmptyKm?.let { _distanceToEmpty.value = it }

@@ -2,8 +2,10 @@ package com.itvs.connect.ui.screens
 
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
+import androidx.compose.foundation.horizontalScroll
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
@@ -17,9 +19,11 @@ import androidx.compose.material3.ButtonDefaults
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.Text
+import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.unit.dp
+import com.itvs.connect.ble.ClusterStatsRotator
 import com.itvs.connect.ble.ConnectionState
 import com.itvs.connect.ble.DiscoveredDevice
 import com.itvs.connect.ui.DashboardUi
@@ -36,7 +40,9 @@ fun DashboardScreen(
     onDisconnect: () -> Unit,
     onFindMe: () -> Unit,
     onDropPin: () -> Unit,
-    onConnectMac: (String) -> Unit
+    onConnectMac: (String) -> Unit,
+    onShowClusterPage: (Int) -> Unit = {},
+    onStopClusterHud: () -> Unit = {}
 ) {
     Column(
         modifier = Modifier
@@ -113,6 +119,48 @@ fun DashboardScreen(
             Spacer(Modifier.height(16.dp))
         }
 
+        if (ui.connection is ConnectionState.Connected && ui.telemetryActive) {
+            SectionHeader(
+                "Cluster display",
+                if (ui.clusterHudRunning) {
+                    "Showing on scooter · tap to switch (Voice button optional)"
+                } else {
+                    "Tap a stat to show it on the scooter cluster"
+                }
+            )
+            Row(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .horizontalScroll(rememberScrollState()),
+                horizontalArrangement = Arrangement.spacedBy(8.dp)
+            ) {
+                ClusterStatsRotator.PAGE_LABELS.forEachIndexed { index, label ->
+                    val selected = ui.clusterHudRunning && ui.clusterPageIndex == index
+                    val colors = if (selected) {
+                        ButtonDefaults.buttonColors(
+                            containerColor = MaterialTheme.colorScheme.secondary
+                        )
+                    } else {
+                        ButtonDefaults.buttonColors(
+                            containerColor = MaterialTheme.colorScheme.surfaceVariant,
+                            contentColor = MaterialTheme.colorScheme.onSurface
+                        )
+                    }
+                    Button(
+                        onClick = { onShowClusterPage(index) },
+                        colors = colors,
+                        shape = RoundedCornerShape(12.dp)
+                    ) { Text(label) }
+                }
+            }
+            if (ui.clusterHudRunning) {
+                TextButton(onClick = onStopClusterHud) {
+                    Text("Stop cluster display")
+                }
+            }
+            Spacer(Modifier.height(16.dp))
+        }
+
         SectionHeader("Telemetry", "Live values from the SmartXonnect cluster")
         MetricRow {
             MetricTile("Fuel", "${ui.fuelPercent}%", Modifier.weight(1f))
@@ -121,7 +169,7 @@ fun DashboardScreen(
         Spacer(Modifier.height(10.dp))
         MetricRow {
             MetricTile(
-                "Economy",
+                "Avg km/L",
                 if (ui.afe in 1..99) "${ui.afe} km/L" else "— km/L",
                 Modifier.weight(1f)
             )

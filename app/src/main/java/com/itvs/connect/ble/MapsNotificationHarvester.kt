@@ -8,6 +8,7 @@ import android.os.Bundle
 import android.provider.Settings
 import android.service.notification.StatusBarNotification
 import android.util.Log
+import android.view.LayoutInflater
 import android.view.View
 import android.view.ViewGroup
 import android.widget.FrameLayout
@@ -80,6 +81,8 @@ object MapsNotificationHarvester {
                 .onFailure { error = listOfNotNull(error, "actions: ${it.message}").joinToString("; ") }
             runCatching { texts += harvestAppliedViews(context, sbn.packageName, rv) }
                 .onFailure { error = listOfNotNull(error, "apply: ${it.message}").joinToString("; ") }
+            runCatching { texts += harvestInflateReapply(context, sbn.packageName, rv) }
+                .onFailure { error = listOfNotNull(error, "inflate: ${it.message}").joinToString("; ") }
         }
 
         val unique = texts
@@ -371,20 +374,26 @@ object MapsNotificationHarvester {
         return null
     }
 
+    private fun mapsPackageContext(context: Context, packageName: String): Context {
+        return runCatching {
+            context.createPackageContext(packageName, Context.CONTEXT_IGNORE_SECURITY)
+        }.getOrNull() ?: runCatching {
+            context.createPackageContext(
+                packageName,
+                Context.CONTEXT_IGNORE_SECURITY or Context.CONTEXT_RESTRICTED
+            )
+        }.getOrNull() ?: runCatching {
+            context.createPackageContext(packageName, Context.CONTEXT_RESTRICTED)
+        }.getOrNull() ?: context
+    }
+
     private fun harvestAppliedViews(
         context: Context,
         packageName: String?,
         remoteViews: RemoteViews
     ): List<String> {
         val pkg = packageName ?: return emptyList()
-        val mapsCx = runCatching {
-            context.createPackageContext(
-                pkg,
-                Context.CONTEXT_IGNORE_SECURITY or Context.CONTEXT_RESTRICTED
-            )
-        }.getOrNull() ?: runCatching {
-            context.createPackageContext(pkg, Context.CONTEXT_RESTRICTED)
-        }.getOrNull() ?: context
+        val mapsCx = mapsPackageContext(context, pkg)
 
         val host = FrameLayout(context)
         val applied = runCatching { remoteViews.apply(mapsCx, host) }.getOrNull()
@@ -395,6 +404,31 @@ object MapsNotificationHarvester {
         runCatching { remoteViews.reapply(context, applied) }
         val texts = mutableListOf<String>()
         collectText(host, mapsCx, texts)
+        return texts
+    }
+
+    /**
+     * GMapsParser-style path: inflate Maps' layoutId in Maps' package context,
+     * then reapply RemoteViews actions. Works when [RemoteViews.apply] fails.
+     */
+    private fun harvestInflateReapply(
+        context: Context,
+        packageName: String?,
+        remoteViews: RemoteViews
+    ): List<String> {
+        val pkg = packageName ?: return emptyList()
+        val mapsCx = mapsPackageContext(context, pkg)
+        val layoutId = runCatching { remoteViews.layoutId }.getOrNull() ?: return emptyList()
+        if (layoutId == 0) return emptyList()
+        val inflater = mapsCx.getSystemService(Context.LAYOUT_INFLATER_SERVICE) as? LayoutInflater
+            ?: return emptyList()
+        val root = runCatching {
+            inflater.inflate(layoutId, null) as? ViewGroup
+        }.getOrNull() ?: return emptyList()
+        runCatching { remoteViews.reapply(mapsCx, root) }
+        runCatching { remoteViews.reapply(context, root) }
+        val texts = mutableListOf<String>()
+        collectText(root, mapsCx, texts)
         return texts
     }
 
@@ -413,7 +447,18 @@ object MapsNotificationHarvester {
                         "nav_time", "header_text", "lockscreen_eta", "text",
                         "nav_description", "lockscreen_oneliner", "lockscreen_directions",
                         "title", "nav_title", "eta", "distance", "time",
-                        "alternate_time", "alternate_distance" -> out += "FIELD:$name=$t"
+                        "alternate_time", "alternate_distance", "header_text_secondary",
+                        "status_bar_latest_event_content", "chronometer",
+                        "notification_main_column", "line1", "line2", "line3" ->
+                            out += "FIELD:$name=$t"
+                    }
+                    // Any resource name containing eta/time/distance is worth keeping tagged.
+                    if (name.contains("eta", ignoreCase = true) ||
+                        name.contains("time", ignoreCase = true) ||
+                        name.contains("dist", ignoreCase = true) ||
+                        name.contains("nav", ignoreCase = true)
+                    ) {
+                        out += "FIELD:$name=$t"
                     }
                 }
             }

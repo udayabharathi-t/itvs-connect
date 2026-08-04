@@ -49,6 +49,8 @@ class ScooterBleService : Service() {
 
     private var wakeLock: PowerManager.WakeLock? = null
     private var rideEndJob: Job? = null
+    /** Independent of collectLatest — must not be cancelled by connection-state churn. */
+    private var rideFinalizeJob: Job? = null
     private var flashClearJob: Job? = null
     private var autoReconnectJob: Job? = null
     private var callState: String = TelephonyManager.EXTRA_STATE_IDLE
@@ -132,6 +134,8 @@ class ScooterBleService : Service() {
                 userDisconnected = true
                 autoReconnectJob?.cancel()
                 autoReconnectJob = null
+                // Persist the ride before tearing down GATT — state collectors can race.
+                finalizeActiveRide(notifySaved = true)
                 ble.disconnect()
             }
             ACTION_STOP -> {
@@ -144,6 +148,15 @@ class ScooterBleService : Service() {
                     val r2 = intent.getStringExtra(EXTRA_ROW2).orEmpty()
                     if (r1.isNotBlank()) flashCluster(r1, r2)
                 }
+            }
+            ACTION_SHOW_STATS_PAGE -> {
+                val page = intent.getIntExtra(EXTRA_PAGE, 0)
+                val label = statsRotator.showPage(page)
+                notify("Stats · $label")
+            }
+            ACTION_STOP_STATS_HUD -> {
+                statsRotator.stop()
+                notify(getString(R.string.service_notification_title))
             }
             null -> scope.launch {
                 settings = prefs.settings.first()
@@ -168,6 +181,18 @@ class ScooterBleService : Service() {
 
     fun manager(): ScooterBleManager = ble
     fun tracker(): RideTracker = rideTracker
+    fun isStatsHudRunning(): Boolean = statsRotator.isRunning
+    fun currentStatsPageIndex(): Int = statsRotator.currentIndex
+
+    fun showStatsPage(pageIndex: Int): String {
+        val label = statsRotator.showPage(pageIndex)
+        notify("Stats · $label")
+        return label
+    }
+
+    fun stopStatsHud() {
+        statsRotator.stop()
+    }
 
     @Suppress("UNUSED_PARAMETER")
     private fun maybeStartAutoReconnect(reason: String) {
@@ -251,16 +276,15 @@ class ScooterBleService : Service() {
                     ConnectionState.Disconnected,
                     is ConnectionState.Failed -> {
                         statsRotator.stop()
-                        if (rideTracker.isActive()) {
-                            rideEndJob?.cancel()
-                            rideEndJob = null
-                            rideTracker.endRideIfNeeded()
-                            releaseWakeLock()
-                            notify("Ride saved · disconnected")
-                        }
+                        // Launch on service scope so collectLatest re-entries cannot cancel the save.
+                        val saveJob = finalizeActiveRide(notifySaved = true)
                         // Unexpected drop — keep trying if auto-connect is on.
+                        // Wait for ride persistence so a reconnect cannot race the snapshot.
                         if (!userDisconnected && settings.autoConnect && settings.scooterMac.isNotBlank()) {
-                            maybeStartAutoReconnect(reason = "disconnect")
+                            scope.launch {
+                                saveJob?.join()
+                                maybeStartAutoReconnect(reason = "disconnect")
+                            }
                         }
                     }
                     else -> Unit
@@ -287,16 +311,25 @@ class ScooterBleService : Service() {
                     }
                 } else if (rideTracker.isActive()) {
                     // Soft end: grace period in case of brief telemetry gaps while still connected.
-                    // Hard disconnect path above ends immediately.
+                    // Hard disconnect path finalizes immediately via finalizeActiveRide().
                     if (ble.connectionState.value is ConnectionState.Connected) {
                         rideEndJob?.cancel()
                         rideEndJob = scope.launch {
                             delay(BleConstants.RIDE_END_GRACE_MS)
-                            if (!ble.isTelemetryActive.value && rideTracker.isActive()) {
-                                rideTracker.endRideIfNeeded()
+                            if (!ble.isTelemetryActive.value &&
+                                ble.connectionState.value is ConnectionState.Connected &&
+                                rideTracker.isActive()
+                            ) {
+                                val saved = rideTracker.endRideIfNeeded()
                                 releaseWakeLock()
                                 statsRotator.stop()
-                                notify(getString(R.string.service_notification_title))
+                                notify(
+                                    if (saved != null) {
+                                        "Ride saved"
+                                    } else {
+                                        getString(R.string.service_notification_title)
+                                    }
+                                )
                             }
                         }
                     }
@@ -313,8 +346,8 @@ class ScooterBleService : Service() {
                 prefs.persistTelemetry(
                     fuel = ble.fuelLevel.value,
                     odo = ble.odometer.value,
-                    afe = ble.liveFuelEconomy.value.takeIf { it in 1..99 }
-                        ?: ble.averageFuelEconomy.value,
+                    afe = ble.averageFuelEconomy.value.takeIf { it in 1..99 }
+                        ?: ble.liveFuelEconomy.value,
                     dte = ble.distanceToEmpty.value
                 )
                 if (rideTracker.isActive()) {
@@ -471,6 +504,27 @@ class ScooterBleService : Service() {
         }
     }
 
+    /**
+     * Persist an in-progress ride. Coalesces concurrent callers and runs on the
+     * service scope so [kotlinx.coroutines.flow.collectLatest] cancellation cannot
+     * abort the database write.
+     */
+    private fun finalizeActiveRide(notifySaved: Boolean): Job? {
+        rideEndJob?.cancel()
+        rideEndJob = null
+        rideFinalizeJob?.takeIf { it.isActive }?.let { return it }
+        if (!rideTracker.isActive()) return null
+        rideFinalizeJob = scope.launch {
+            val saved = rideTracker.endRideIfNeeded()
+            releaseWakeLock()
+            statsRotator.stop()
+            if (notifySaved && saved != null) {
+                notify("Ride saved · disconnected")
+            }
+        }
+        return rideFinalizeJob
+    }
+
     private fun acquireWakeLock() {
         if (wakeLock?.isHeld == true) return
         val pm = getSystemService(PowerManager::class.java)
@@ -539,9 +593,12 @@ class ScooterBleService : Service() {
         const val ACTION_DISCONNECT = "com.itvs.connect.action.DISCONNECT"
         const val ACTION_STOP = "com.itvs.connect.action.STOP"
         const val ACTION_CLUSTER_MESSAGE = "com.itvs.connect.action.CLUSTER_MESSAGE"
+        const val ACTION_SHOW_STATS_PAGE = "com.itvs.connect.action.SHOW_STATS_PAGE"
+        const val ACTION_STOP_STATS_HUD = "com.itvs.connect.action.STOP_STATS_HUD"
         const val EXTRA_ROW1 = "row1"
         const val EXTRA_ROW2 = "row2"
         const val EXTRA_MAC = "mac"
+        const val EXTRA_PAGE = "page"
 
         private const val CHANNEL_CONN = "scooter_conn"
         private const val CHANNEL_RIDE = "scooter_ride"
@@ -550,6 +607,13 @@ class ScooterBleService : Service() {
         fun start(context: Context, action: String? = null) {
             val intent = Intent(context, ScooterBleService::class.java)
             if (action != null) intent.action = action
+            context.startForegroundService(intent)
+        }
+
+        fun startShowStatsPage(context: Context, pageIndex: Int) {
+            val intent = Intent(context, ScooterBleService::class.java)
+                .setAction(ACTION_SHOW_STATS_PAGE)
+                .putExtra(EXTRA_PAGE, pageIndex)
             context.startForegroundService(intent)
         }
     }
