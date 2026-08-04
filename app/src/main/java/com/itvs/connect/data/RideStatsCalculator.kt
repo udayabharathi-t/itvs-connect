@@ -3,9 +3,9 @@ package com.itvs.connect.data
 /**
  * Pure helpers for ride distance / economy math.
  *
- * Approx km/L prefers fuel-bar delta when tank capacity is known.
- * Otherwise uses the average of cluster AFE samples collected during the ride,
- * falling back to the last cluster AFE reading.
+ * Approx km/L prefers the running average of live cluster economy samples.
+ * Fuel-bar delta is a secondary estimate when no live samples were captured.
+ * A single sticky AFE reading alone is not treated as a meaningful average.
  */
 object RideStatsCalculator {
 
@@ -20,6 +20,7 @@ object RideStatsCalculator {
     )
 
     enum class EconomySource {
+        LIVE_AVG,
         FUEL_DELTA,
         CLUSTER_AFE_AVG,
         CLUSTER_AFE,
@@ -67,15 +68,23 @@ object RideStatsCalculator {
         distanceKm: Double,
         litresUsed: Double?,
         avgClusterAfe: Double?,
-        lastClusterAfe: Int?
+        lastClusterAfe: Int?,
+        liveSampleCount: Int = 0
     ): Pair<Double?, EconomySource> {
+        // Prefer running average of live economy samples when we actually collected some.
+        if (avgClusterAfe != null && avgClusterAfe > 0.0 && liveSampleCount > 0) {
+            return avgClusterAfe to EconomySource.LIVE_AVG
+        }
         if (litresUsed != null && litresUsed > 0.05 && distanceKm > 0.05) {
             return (distanceKm / litresUsed) to EconomySource.FUEL_DELTA
         }
         if (avgClusterAfe != null && avgClusterAfe > 0.0 && distanceKm > 0.05) {
             return avgClusterAfe to EconomySource.CLUSTER_AFE_AVG
         }
-        if (lastClusterAfe != null && lastClusterAfe in 1..99 && distanceKm > 0.05) {
+        // Do not invent an average from a single sticky cluster reading with no samples.
+        if (lastClusterAfe != null && lastClusterAfe in 1..99 &&
+            distanceKm > 0.05 && liveSampleCount > 0
+        ) {
             return lastClusterAfe.toDouble() to EconomySource.CLUSTER_AFE
         }
         return null to EconomySource.UNKNOWN
@@ -98,7 +107,13 @@ object RideStatsCalculator {
         val distance = distanceKm(startOdo, endOdo, gpsDistanceKm)
         val litres = estimateLitresUsed(startFuelPercent, endFuelPercent, tankCapacityLitres)
         val avgAfe = averageAfe(afeSamples)
-        val (kmL, source) = approxKmPerLitre(distance, litres, avgAfe, clusterAfe)
+        val (kmL, source) = approxKmPerLitre(
+            distanceKm = distance,
+            litresUsed = litres,
+            avgClusterAfe = avgAfe,
+            lastClusterAfe = clusterAfe,
+            liveSampleCount = afeSamples.size
+        )
         @Suppress("UNUSED_VARIABLE")
         val ignored = maxSpeedKmh
         return RideMetrics(
@@ -121,13 +136,14 @@ object RideStatsCalculator {
         val distance = ordered.sumOf { it.distanceKm }
         val duration = ordered.sumOf { it.durationMs }
         val litres = ordered.mapNotNull { it.estimatedLitresUsed }.takeIf { it.isNotEmpty() }?.sum()
-        val afeSamples = ordered.mapNotNull { it.approxKmPerLitre?.toInt() }
-        val avgAfe = ordered.mapNotNull { it.approxKmPerLitre }.takeIf { it.isNotEmpty() }?.average()
+        val liveValues = ordered.mapNotNull { it.approxKmPerLitre }
+        val avgAfe = liveValues.takeIf { it.isNotEmpty() }?.average()
         val (kmL, source) = approxKmPerLitre(
             distanceKm = distance,
             litresUsed = litres,
             avgClusterAfe = avgAfe,
-            lastClusterAfe = last.clusterAfeKmL
+            lastClusterAfe = last.clusterAfeKmL,
+            liveSampleCount = liveValues.size
         )
         return RideEntity(
             startTimeMs = first.startTimeMs,

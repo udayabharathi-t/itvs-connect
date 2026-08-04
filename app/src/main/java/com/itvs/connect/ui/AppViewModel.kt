@@ -59,7 +59,7 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
             ble.connectionState,
             ble.fuelLevel,
             ble.odometer,
-            ble.averageFuelEconomy,
+            ble.liveFuelEconomy,
             ble.distanceToEmpty,
             ble.serviceReminder,
             ble.isPinging,

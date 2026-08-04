@@ -5,7 +5,18 @@ data class TelemetrySnapshot(
     val fuelPercent: Int? = null,
     val fuelBars: Int? = null,
     val serviceReminder: Int? = null,
+    /** Cluster trip/average fuel economy (AFE), km/L integer. */
     val averageFuelEconomy: Int? = null,
+    /**
+     * Instantaneous fuel economy (IFE) when the cluster provides it.
+     * Null when the packet has no valid IFE (e.g. speed too low → cluster shows "--").
+     */
+    val instantFuelEconomy: Int? = null,
+    /**
+     * Best live km/L for HUD: IFE when valid, otherwise AFE when valid.
+     * Null means no readable economy in this packet.
+     */
+    val liveFuelEconomy: Int? = null,
     val distanceToEmptyKm: Int? = null,
     val callCommand: Int? = null,
     val musicCommand: MusicCommand? = null,
@@ -69,16 +80,41 @@ object TelemetryParser {
         )
     }
 
+    /**
+     * Economy packet `0x19`:
+     * - documented AFE at byte 8
+     * - IFE commonly adjacent at byte 7 (some firmware variants use byte 9)
+     * - DTE u16 at bytes 11-12
+     *
+     * Cluster IFE is blank below ~10 km/h; those packets send 0 / out-of-range → null.
+     */
     fun parseEconomy(data: ByteArray): TelemetrySnapshot? {
         if (data.size < 14) return null
-        val afe = data[8].toInt() and 0xFF
+        val b7 = data[7].toInt() and 0xFF
+        val b8 = data[8].toInt() and 0xFF
+        val b9 = data[9].toInt() and 0xFF
+
+        val afe = b8.takeIf { isValidKmL(it) }
+        // Instantaneous economy: prefer byte 7, then a differing byte 9.
+        // When IFE equals AFE that is still a valid live reading.
+        val ife = when {
+            isValidKmL(b7) -> b7
+            isValidKmL(b9) && (afe == null || b9 != afe) -> b9
+            else -> null
+        }
+        // Live for HUD/sampling: IFE when present, else AFE from the same packet.
+        val live = ife ?: afe
         val dte = ((data[11].toInt() and 0xFF) shl 8) or (data[12].toInt() and 0xFF)
         return TelemetrySnapshot(
             averageFuelEconomy = afe,
+            instantFuelEconomy = ife,
+            liveFuelEconomy = live,
             distanceToEmptyKm = dte,
             isIgnitionTelemetry = true
         )
     }
+
+    fun isValidKmL(value: Int): Boolean = value in 1..99
 
     fun parseMusic(data: ByteArray): TelemetrySnapshot? {
         if (data.size < 3) return null

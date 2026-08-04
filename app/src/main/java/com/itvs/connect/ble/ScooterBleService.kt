@@ -86,7 +86,7 @@ class ScooterBleService : Service() {
             provider = {
                 ClusterStatsRotator.fromLive(
                     ride = rideTracker.activeRide.value,
-                    liveAfe = ble.averageFuelEconomy.value,
+                    liveKmL = ble.freshLiveEconomyKmL(),
                     maps = MapsNavigationStore.snapshot
                 )
             }
@@ -277,7 +277,7 @@ class ScooterBleService : Service() {
                     rideTracker.startRideIfNeeded(
                         odometerKm = ble.odometer.value,
                         fuelPercent = ble.fuelLevel.value,
-                        afe = ble.averageFuelEconomy.value,
+                        liveKmL = ble.freshLiveEconomyKmL() ?: 0,
                         tankCapacityLitres = s.tankCapacityLitres
                     )
                     notify(getString(R.string.ride_notification_title))
@@ -304,18 +304,24 @@ class ScooterBleService : Service() {
             }
         }
         scope.launch {
+            ble.liveEconomySamples.collectLatest { liveKmL ->
+                rideTracker.onLiveEconomy(liveKmL)
+            }
+        }
+        scope.launch {
             ble.telemetryPersisted.collectLatest {
                 prefs.persistTelemetry(
                     fuel = ble.fuelLevel.value,
                     odo = ble.odometer.value,
-                    afe = ble.averageFuelEconomy.value,
+                    afe = ble.liveFuelEconomy.value.takeIf { it in 1..99 }
+                        ?: ble.averageFuelEconomy.value,
                     dte = ble.distanceToEmpty.value
                 )
                 if (rideTracker.isActive()) {
                     rideTracker.onTelemetry(
                         ble.odometer.value,
                         ble.fuelLevel.value,
-                        ble.averageFuelEconomy.value,
+                        ble.freshLiveEconomyKmL() ?: 0,
                         settings.tankCapacityLitres
                     )
                 }

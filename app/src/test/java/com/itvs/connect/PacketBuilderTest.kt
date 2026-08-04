@@ -77,12 +77,27 @@ class PacketBuilderTest {
         val eco = ByteArray(20)
         eco[0] = BleConstants.START_BYTE
         eco[1] = BleConstants.DATA_ID_ECONOMY.toByte()
-        eco[8] = 52
+        eco[7] = 61 // IFE
+        eco[8] = 52 // AFE
         eco[11] = 0x00
         eco[12] = 0x7B // 123
         val ecoSnap = TelemetryParser.parse(eco)!!
+        assertThat(ecoSnap.instantFuelEconomy).isEqualTo(61)
         assertThat(ecoSnap.averageFuelEconomy).isEqualTo(52)
+        assertThat(ecoSnap.liveFuelEconomy).isEqualTo(61)
         assertThat(ecoSnap.distanceToEmptyKm).isEqualTo(123)
         assertThat(ecoSnap.isIgnitionTelemetry).isTrue()
+
+        val afeOnly = ByteArray(20)
+        afeOnly[0] = BleConstants.START_BYTE
+        afeOnly[1] = BleConstants.DATA_ID_ECONOMY.toByte()
+        afeOnly[7] = 0 // IFE blank / low speed
+        afeOnly[8] = 40
+        afeOnly[11] = 0x00
+        afeOnly[12] = 0x50
+        val afeSnap = TelemetryParser.parse(afeOnly)!!
+        assertThat(afeSnap.instantFuelEconomy).isNull()
+        assertThat(afeSnap.averageFuelEconomy).isEqualTo(40)
+        assertThat(afeSnap.liveFuelEconomy).isEqualTo(40)
     }
 }

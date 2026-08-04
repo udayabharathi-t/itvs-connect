@@ -54,8 +54,28 @@ class RideStatsCalculatorTest {
         assertThat(metrics.distanceKm).isWithin(0.01).of(15.0)
         assertThat(metrics.approxKmPerLitre).isWithin(0.01).of(48.0)
         assertThat(metrics.economySource)
-            .isEqualTo(RideStatsCalculator.EconomySource.CLUSTER_AFE_AVG)
+            .isEqualTo(RideStatsCalculator.EconomySource.LIVE_AVG)
         assertThat(metrics.avgSpeedKmh).isWithin(0.1).of(30.0)
+    }
+
+    @Test
+    fun noLiveSamplesMeansUnknownEconomyEvenWithStickyAfe() {
+        val metrics = RideStatsCalculator.compute(
+            startOdo = 10.0,
+            endOdo = 25.0,
+            gpsDistanceKm = 0.0,
+            startTimeMs = 0L,
+            endTimeMs = 30 * 60 * 1000L,
+            startFuelPercent = 60,
+            endFuelPercent = 60,
+            tankCapacityLitres = 5.1,
+            clusterAfe = 40,
+            afeSamples = emptyList(),
+            maxSpeedKmh = 60.0
+        )
+        assertThat(metrics.approxKmPerLitre).isNull()
+        assertThat(metrics.economySource)
+            .isEqualTo(RideStatsCalculator.EconomySource.UNKNOWN)
     }
 
     @Test

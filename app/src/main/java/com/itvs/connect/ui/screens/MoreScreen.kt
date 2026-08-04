@@ -103,7 +103,9 @@ fun MoreScreen(
                 }
             },
             label = { Text("Fuel tank capacity (L)") },
-            supportingText = { Text("Used to estimate per-ride km/L from fuel-bar changes") },
+            supportingText = {
+                Text("Fallback only when no live km/L samples were captured during a ride")
+            },
             modifier = Modifier.fillMaxWidth()
         )
 
