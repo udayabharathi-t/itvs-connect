@@ -89,7 +89,8 @@ class ScooterBleService : Service() {
                 ClusterStatsRotator.fromLive(
                     ride = rideTracker.activeRide.value,
                     liveKmL = ble.freshLiveEconomyKmL(),
-                    maps = MapsNavigationStore.snapshot
+                    maps = MapsNavigationStore.snapshot,
+                    fuelCostPerLitre = settings.fuelCostPerLitre
                 )
             }
         )

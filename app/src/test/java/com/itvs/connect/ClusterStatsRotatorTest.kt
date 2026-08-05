@@ -18,16 +18,18 @@ class ClusterStatsRotatorTest {
                 liveMileageKmL = 48,
                 tripKmPerLitre = 36.2,
                 avgSpeedKmh = 28.0,
+                tripCostRupees = 118,
                 mapsEta = "N/A",
                 mapsDistance = "N/A"
             )
         )
-        assertThat(pages).hasSize(7)
+        assertThat(pages).hasSize(8)
         assertThat(pages.map { it.first }).containsExactly(
             "Ride time:",
             "Ride km:",
             "Live km/L:",
             "Trip km/L:",
+            "Trip Cost:",
             "Avg speed:",
             "Maps ETA:",
             "Dist left:"
@@ -36,7 +38,8 @@ class ClusterStatsRotatorTest {
         assertThat(pages[1].second).isEqualTo("42.5 km")
         assertThat(pages[2].second).isEqualTo("48 km/L")
         assertThat(pages[3].second).isEqualTo("36.2 km/L")
-        assertThat(pages[4].second).isEqualTo("28 km/h")
+        assertThat(pages[4].second).isEqualTo("Rs 118")
+        assertThat(pages[5].second).isEqualTo("28 km/h")
     }
 
     @Test
@@ -48,11 +51,13 @@ class ClusterStatsRotatorTest {
                 liveMileageKmL = 40,
                 tripKmPerLitre = null,
                 avgSpeedKmh = 10.0,
+                tripCostRupees = null,
                 mapsEta = "N/A",
                 mapsDistance = "N/A"
             )
         )
         assertThat(pages.first { it.first == "Trip km/L:" }.second).isEqualTo("N/A")
+        assertThat(pages.first { it.first == "Trip Cost:" }.second).isEqualTo("N/A")
         assertThat(pages.first { it.first == "Live km/L:" }.second).isEqualTo("40 km/L")
     }
 
@@ -61,19 +66,39 @@ class ClusterStatsRotatorTest {
         val snap = ClusterStatsRotator.fromLive(
             ride = null,
             liveKmL = null,
-            maps = MapsNavSnapshot.Empty
+            maps = MapsNavSnapshot.Empty,
+            fuelCostPerLitre = 100
         )
         assertThat(snap.liveMileageKmL).isNull()
         assertThat(snap.tripKmPerLitre).isNull()
+        assertThat(snap.tripCostRupees).isNull()
         val pages = ClusterStatsRotator.pages(snap)
         assertThat(pages.first { it.first == "Live km/L:" }.second).isEqualTo("N/A")
         assertThat(pages.first { it.first == "Trip km/L:" }.second).isEqualTo("N/A")
+        assertThat(pages.first { it.first == "Trip Cost:" }.second).isEqualTo("N/A")
+    }
+
+    @Test
+    fun approxTripCostUsesDistanceAndTripKmL() {
+        // 40 km ÷ 40 km/L × Rs 100/L = Rs 100
+        assertThat(
+            ClusterStatsRotator.approxTripCostRupees(40.0, 40.0, 100)
+        ).isEqualTo(100)
+        // 42.5 ÷ 36.2 × 100 ≈ 117.4 → 117
+        assertThat(
+            ClusterStatsRotator.approxTripCostRupees(42.5, 36.2, 100)
+        ).isEqualTo(117)
+        assertThat(ClusterStatsRotator.approxTripCostRupees(10.0, 40.0, 0)).isNull()
+        assertThat(ClusterStatsRotator.approxTripCostRupees(0.0, 40.0, 100)).isNull()
+        assertThat(ClusterStatsRotator.approxTripCostRupees(10.0, null, 100)).isNull()
     }
 
     @Test
     fun sanitizeKeepsColonAndSlash() {
         assertThat(PacketBuilder.sanitizeClusterText("Maps ETA: 15m")).isEqualTo("Maps ETA: 15m")
         assertThat(PacketBuilder.sanitizeClusterText("48 km/L")).isEqualTo("48 km/L")
+        assertThat(PacketBuilder.sanitizeClusterText("Trip Cost:")).isEqualTo("Trip Cost:")
+        assertThat(PacketBuilder.sanitizeClusterText("Rs 245")).isEqualTo("Rs 245")
     }
 
     @Test
