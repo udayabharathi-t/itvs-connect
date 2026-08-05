@@ -115,6 +115,20 @@ fun DashboardScreen(
                         Modifier.weight(1f)
                     )
                 }
+                Spacer(Modifier.height(10.dp))
+                val tripCost = ClusterStatsRotator.approxTripCostRupees(
+                    distanceKm = ride.distanceKm,
+                    tripKmPerLitre = ride.tripKmPerLitre,
+                    fuelCostPerLitre = ui.settings.fuelCostPerLitre
+                )
+                MetricRow {
+                    MetricTile(
+                        "Trip Cost",
+                        if (tripCost != null) "Rs $tripCost" else "—",
+                        Modifier.weight(1f)
+                    )
+                    Spacer(Modifier.weight(1f))
+                }
             }
             Spacer(Modifier.height(16.dp))
         }

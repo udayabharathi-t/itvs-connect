@@ -108,6 +108,26 @@ fun MoreScreen(
             },
             modifier = Modifier.fillMaxWidth()
         )
+        Spacer(Modifier.height(8.dp))
+        OutlinedTextField(
+            value = if (settings.fuelCostPerLitre > 0) {
+                settings.fuelCostPerLitre.toString()
+            } else {
+                ""
+            },
+            onValueChange = { v ->
+                val digits = v.filter { it.isDigit() }.take(4)
+                onChange { s ->
+                    s.copy(fuelCostPerLitre = digits.toIntOrNull()?.coerceIn(0, 9999) ?: 0)
+                }
+            },
+            label = { Text("Fuel cost (Rs / litre)") },
+            supportingText = {
+                Text("Used for approx Trip Cost = distance ÷ trip km/L × this price (whole rupees)")
+            },
+            modifier = Modifier.fillMaxWidth(),
+            singleLine = true
+        )
 
         Spacer(Modifier.height(12.dp))
         RowSwitch("Auto-reconnect", settings.autoConnect) {

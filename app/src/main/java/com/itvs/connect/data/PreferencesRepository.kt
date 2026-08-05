@@ -19,6 +19,8 @@ data class AppSettings(
     val scooterMac: String = "",
     val scooterName: String = "",
     val tankCapacityLitres: Double = 5.1,
+    /** Petrol price in whole rupees per litre. 0 = unset (Trip Cost shows N/A). */
+    val fuelCostPerLitre: Int = 0,
     val riderName: String = "iTVS",
     val autoConnect: Boolean = true,
     val appNotificationsEnabled: Boolean = true,
@@ -53,6 +55,7 @@ class PreferencesRepository(private val context: Context) {
         val scooterMac = stringPreferencesKey("scooter_mac")
         val scooterName = stringPreferencesKey("scooter_name")
         val tankCapacity = doublePreferencesKey("tank_capacity")
+        val fuelCostPerLitre = intPreferencesKey("fuel_cost_per_litre")
         val riderName = stringPreferencesKey("rider_name")
         val autoConnect = booleanPreferencesKey("auto_connect")
         val appNotifications = booleanPreferencesKey("app_notifications")
@@ -86,6 +89,7 @@ class PreferencesRepository(private val context: Context) {
             scooterMac = p[Keys.scooterMac].orEmpty(),
             scooterName = p[Keys.scooterName].orEmpty(),
             tankCapacityLitres = p[Keys.tankCapacity] ?: 5.1,
+            fuelCostPerLitre = p[Keys.fuelCostPerLitre] ?: 0,
             riderName = p[Keys.riderName] ?: "iTVS",
             autoConnect = p[Keys.autoConnect] ?: true,
             appNotificationsEnabled = p[Keys.appNotifications] ?: true,
@@ -135,6 +139,7 @@ class PreferencesRepository(private val context: Context) {
                 scooterMac = prefs[Keys.scooterMac].orEmpty(),
                 scooterName = prefs[Keys.scooterName].orEmpty(),
                 tankCapacityLitres = prefs[Keys.tankCapacity] ?: 5.1,
+                fuelCostPerLitre = prefs[Keys.fuelCostPerLitre] ?: 0,
                 riderName = prefs[Keys.riderName] ?: "iTVS",
                 autoConnect = prefs[Keys.autoConnect] ?: true,
                 appNotificationsEnabled = prefs[Keys.appNotifications] ?: true,
@@ -166,6 +171,7 @@ class PreferencesRepository(private val context: Context) {
             prefs[Keys.scooterMac] = next.scooterMac
             prefs[Keys.scooterName] = next.scooterName
             prefs[Keys.tankCapacity] = next.tankCapacityLitres
+            prefs[Keys.fuelCostPerLitre] = next.fuelCostPerLitre
             prefs[Keys.riderName] = next.riderName
             prefs[Keys.autoConnect] = next.autoConnect
             prefs[Keys.appNotifications] = next.appNotificationsEnabled
