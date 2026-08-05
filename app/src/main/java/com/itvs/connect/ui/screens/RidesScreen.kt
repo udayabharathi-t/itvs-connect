@@ -40,6 +40,7 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.unit.dp
+import com.itvs.connect.ble.ClusterStatsRotator
 import com.itvs.connect.data.PlaceNameResolver
 import com.itvs.connect.data.RideEntity
 import com.itvs.connect.data.RideStatsCalculator
@@ -189,7 +190,8 @@ fun RideDetailScreen(
     ride: RideEntity?,
     onBack: () -> Unit,
     onSaveLabel: (Long, String) -> Unit = { _, _ -> },
-    onEnrichPlaces: (Long) -> Unit = {}
+    onEnrichPlaces: (Long) -> Unit = {},
+    fuelCostPerLitre: Int = 0
 ) {
     val context = LocalContext.current
     var sameLocationDialog by remember { mutableStateOf(false) }
@@ -273,6 +275,14 @@ fun RideDetailScreen(
         DetailLine("Distance", Formatters.km(ride.distanceKm))
         DetailLine("Duration", Formatters.durationHoursMinutes(ride.durationMs))
         DetailLine("Avg km/L", Formatters.kmL(ride.approxKmPerLitre))
+        DetailLine(
+            "Trip Cost",
+            ClusterStatsRotator.approxTripCostRupees(
+                distanceKm = ride.distanceKm,
+                tripKmPerLitre = ride.approxKmPerLitre,
+                fuelCostPerLitre = fuelCostPerLitre
+            )?.let { "Rs $it" } ?: "—"
+        )
         DetailLine("Fuel spent", Formatters.litres(ride.estimatedLitresUsed))
         DetailLine("Economy source", ride.economySource.replace('_', ' '))
         if (ride.clusterAfeKmL != null) {

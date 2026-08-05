@@ -208,7 +208,8 @@ private fun AppRoot(vm: AppViewModel) {
                     ride = ride,
                     onBack = { nav.popBackStack() },
                     onSaveLabel = vm::updateRideLabel,
-                    onEnrichPlaces = vm::enrichRidePlaceNames
+                    onEnrichPlaces = vm::enrichRidePlaceNames,
+                    fuelCostPerLitre = settings.fuelCostPerLitre
                 )
             }
             composable("buttons") {
