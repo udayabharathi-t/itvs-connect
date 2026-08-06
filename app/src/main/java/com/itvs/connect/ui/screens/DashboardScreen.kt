@@ -54,7 +54,13 @@ fun DashboardScreen(
         Text(
             "Local scooter companion · no login · no cloud",
             style = MaterialTheme.typography.bodyMedium,
-            modifier = Modifier.padding(top = 4.dp, bottom = 16.dp)
+            modifier = Modifier.padding(top = 4.dp, bottom = 4.dp)
+        )
+        Text(
+            "Tested on Jupiter 110 cc. Other SmartXonnect bikes need more rider testing.",
+            style = MaterialTheme.typography.bodyMedium,
+            color = MaterialTheme.colorScheme.onSurfaceVariant,
+            modifier = Modifier.padding(bottom = 16.dp)
         )
 
         val (statusLabel, accent) = when (val c = ui.connection) {
