@@ -20,9 +20,8 @@ import java.lang.ref.WeakReference
 
 /**
  * Mirrors selected app notifications onto the scooter cluster (17-char rows).
- * Also harvests Google Maps ETA / remaining distance for the ride-stats rotator
- * by reading extras **and** inflating Maps' custom RemoteViews.
- * Full turn-by-turn HUD remains v2.
+ * Harvests Google Maps turn-by-turn fields (GMapsParser-style RemoteViews inflate)
+ * for the navigation / ride-stats HUD.
  */
 class NotificationMirrorService : NotificationListenerService() {
 
@@ -115,7 +114,7 @@ class NotificationMirrorService : NotificationListenerService() {
         mainHandler.post {
             val active = runCatching { activeNotifications }.getOrNull()
             val snap = MapsNotificationHarvester.harvestActive(this, active)
-            if (snap.etaText != null || snap.remainingDistanceText != null) {
+            if (snap.hasNavData) {
                 MapsNavigationStore.update(snap)
             } else if (active?.none { MapsNavParser.isMapsPackage(it.packageName) } == true) {
                 MapsNavigationStore.clear()
@@ -124,8 +123,10 @@ class NotificationMirrorService : NotificationListenerService() {
     }
 
     private fun applyMapsHarvest(sbn: StatusBarNotification) {
+        // Skip non-ongoing Maps chrome; TBT nav is ongoing.
+        if (!sbn.isOngoing && sbn.id != 1) return
         val snap = MapsNotificationHarvester.harvest(this, sbn)
-        if (snap.etaText != null || snap.remainingDistanceText != null) {
+        if (snap.hasNavData) {
             MapsNavigationStore.update(snap)
         }
     }

@@ -37,6 +37,7 @@ object MapsNotificationHarvester {
         val lastRawPreview: String = "",
         val lastEta: String? = null,
         val lastDistance: String? = null,
+        val lastNextTurn: String? = null,
         val lastError: String? = null,
         val updatedAtMs: Long = 0L
     )
@@ -69,6 +70,7 @@ object MapsNotificationHarvester {
 
     fun harvest(context: Context, sbn: StatusBarNotification): MapsNavSnapshot {
         val listenerOk = isNotificationAccessEnabled(context)
+        val fields = linkedMapOf<String, String>()
         val texts = mutableListOf<String>()
         var error: String? = null
 
@@ -77,12 +79,16 @@ object MapsNotificationHarvester {
 
         val remoteViewsList = allRemoteViews(context, sbn.notification)
         for (rv in remoteViewsList) {
+            // Primary path (GMapsParser): inflate Maps layoutId + reapply, read by view name.
+            runCatching {
+                harvestStructuredFields(context, sbn.packageName, rv, fields)
+            }.onFailure {
+                error = listOfNotNull(error, "structured: ${it.message}").joinToString("; ")
+            }
             runCatching { texts += extractActionsText(rv) }
                 .onFailure { error = listOfNotNull(error, "actions: ${it.message}").joinToString("; ") }
             runCatching { texts += harvestAppliedViews(context, sbn.packageName, rv) }
                 .onFailure { error = listOfNotNull(error, "apply: ${it.message}").joinToString("; ") }
-            runCatching { texts += harvestInflateReapply(context, sbn.packageName, rv) }
-                .onFailure { error = listOfNotNull(error, "inflate: ${it.message}").joinToString("; ") }
         }
 
         val unique = texts
@@ -91,9 +97,29 @@ object MapsNotificationHarvester {
             .filter { it.isNotBlank() }
             .distinct()
             .toList()
-        val parsed = MapsNavParser.parse(*unique.toTypedArray())
-        val preview = unique.joinToString(" | ").take(200)
-        val snap = parsed.copy(rawPreview = preview.ifBlank { parsed.rawPreview })
+
+        // Prefer structured GMaps fields; fall back to tagged FIELD: lines + blob parse.
+        var snap = MapsNavParser.fromGmapsFields(fields)
+        if (!snap.hasNavData) {
+            val fieldTagged = fields.map { (k, v) -> "FIELD:$k=$v" }
+            snap = MapsNavParser.parse(*(fieldTagged + unique).toTypedArray())
+        } else if (snap.nextTurnDistanceText == null || snap.remainingDistanceText == null) {
+            val fieldTagged = fields.map { (k, v) -> "FIELD:$k=$v" }
+            val fallback = MapsNavParser.parse(*(fieldTagged + unique).toTypedArray())
+            snap = merge(snap, fallback)
+        }
+
+        val preview = buildString {
+            if (fields.isNotEmpty()) {
+                append(fields.entries.joinToString(" | ") { "${it.key}=${it.value}" })
+            }
+            if (unique.isNotEmpty()) {
+                if (isNotEmpty()) append(" || ")
+                append(unique.joinToString(" | "))
+            }
+        }.take(240).ifBlank { snap.rawPreview }
+
+        snap = snap.copy(rawPreview = preview.ifBlank { snap.rawPreview })
         debugRef.set(
             HarvestDebug(
                 listenerEnabled = listenerOk,
@@ -102,11 +128,12 @@ object MapsNotificationHarvester {
                 lastRawPreview = preview.ifBlank { "(no text extracted)" },
                 lastEta = snap.etaText,
                 lastDistance = snap.remainingDistanceText,
-                lastError = if (snap.etaText == null && snap.remainingDistanceText == null) {
-                    error ?: if (unique.isEmpty()) {
+                lastNextTurn = snap.nextTurnDistanceText,
+                lastError = if (!snap.hasNavData) {
+                    error ?: if (unique.isEmpty() && fields.isEmpty()) {
                         "Maps notif seen but no readable text"
                     } else {
-                        "Could not parse ETA/distance from: ${preview.take(80)}"
+                        "Could not parse nav from: ${preview.take(80)}"
                     }
                 } else null,
                 updatedAtMs = System.currentTimeMillis()
@@ -114,8 +141,9 @@ object MapsNotificationHarvester {
         )
         Log.i(
             TAG,
-            "pkg=${sbn.packageName} texts=${unique.size} eta=${snap.etaText} " +
-                "dist=${snap.remainingDistanceText} preview=$preview"
+            "pkg=${sbn.packageName} id=${sbn.id} fields=${fields.size} texts=${unique.size} " +
+                "next=${snap.nextTurnDistanceText} dest=${snap.remainingDistanceText} " +
+                "eta=${snap.etaText} preview=$preview"
         )
         return snap
     }
@@ -139,11 +167,18 @@ object MapsNotificationHarvester {
 
         var best = MapsNavSnapshot.Empty
         var sawMaps = false
-        for (sbn in notifications) {
-            if (!MapsNavParser.isMapsPackage(sbn.packageName)) continue
+        // Prefer ongoing Maps TBT notifications (GMapsParser: ongoing + typically id==1).
+        val candidates = notifications
+            .filter { MapsNavParser.isPreferredMapsNavNotification(it) }
+            .sortedByDescending { if (it.id == 1) 1 else 0 }
+            .ifEmpty {
+                notifications.filter { MapsNavParser.isMapsPackage(it.packageName) }
+            }
+
+        for (sbn in candidates) {
             sawMaps = true
             val snap = harvest(context, sbn)
-            if (snap.etaText != null || snap.remainingDistanceText != null) {
+            if (snap.hasNavData) {
                 best = merge(best, snap)
             }
         }
@@ -387,6 +422,29 @@ object MapsNotificationHarvester {
         }.getOrNull() ?: context
     }
 
+    /**
+     * GMapsParser-style path: inflate Maps' layoutId in Maps' package context,
+     * reapply RemoteViews actions, and collect TextViews keyed by resource entry name.
+     */
+    private fun harvestStructuredFields(
+        context: Context,
+        packageName: String?,
+        remoteViews: RemoteViews,
+        fields: MutableMap<String, String>
+    ) {
+        val pkg = packageName ?: return
+        val mapsCx = mapsPackageContext(context, pkg)
+        val layoutId = runCatching { remoteViews.layoutId }.getOrNull() ?: return
+        if (layoutId == 0) return
+        val inflater = mapsCx.getSystemService(Context.LAYOUT_INFLATER_SERVICE) as? LayoutInflater
+            ?: return
+        val root = runCatching {
+            inflater.inflate(layoutId, null) as? ViewGroup
+        }.getOrNull() ?: return
+        runCatching { remoteViews.reapply(mapsCx, root) }
+        collectNamedFields(root, mapsCx, fields)
+    }
+
     private fun harvestAppliedViews(
         context: Context,
         packageName: String?,
@@ -403,33 +461,30 @@ object MapsNotificationHarvester {
         runCatching { remoteViews.reapply(mapsCx, applied) }
         runCatching { remoteViews.reapply(context, applied) }
         val texts = mutableListOf<String>()
+        val fields = linkedMapOf<String, String>()
+        collectNamedFields(host, mapsCx, fields)
+        fields.forEach { (k, v) -> texts += "FIELD:$k=$v" }
         collectText(host, mapsCx, texts)
         return texts
     }
 
-    /**
-     * GMapsParser-style path: inflate Maps' layoutId in Maps' package context,
-     * then reapply RemoteViews actions. Works when [RemoteViews.apply] fails.
-     */
-    private fun harvestInflateReapply(
-        context: Context,
-        packageName: String?,
-        remoteViews: RemoteViews
-    ): List<String> {
-        val pkg = packageName ?: return emptyList()
-        val mapsCx = mapsPackageContext(context, pkg)
-        val layoutId = runCatching { remoteViews.layoutId }.getOrNull() ?: return emptyList()
-        if (layoutId == 0) return emptyList()
-        val inflater = mapsCx.getSystemService(Context.LAYOUT_INFLATER_SERVICE) as? LayoutInflater
-            ?: return emptyList()
-        val root = runCatching {
-            inflater.inflate(layoutId, null) as? ViewGroup
-        }.getOrNull() ?: return emptyList()
-        runCatching { remoteViews.reapply(mapsCx, root) }
-        runCatching { remoteViews.reapply(context, root) }
-        val texts = mutableListOf<String>()
-        collectText(root, mapsCx, texts)
-        return texts
+    private fun collectNamedFields(view: View, mapsCx: Context, fields: MutableMap<String, String>) {
+        when (view) {
+            is TextView -> {
+                val t = view.text?.toString()?.replace('\u00A0', ' ')?.trim().orEmpty()
+                if (t.isEmpty()) return
+                val name = runCatching {
+                    if (view.id > 0) mapsCx.resources.getResourceEntryName(view.id) else null
+                }.getOrNull()
+                if (name != null) {
+                    // Keep first non-blank for each key; big content often has richer text.
+                    if (!fields.containsKey(name) || (fields[name]?.length ?: 0) < t.length) {
+                        fields[name] = t
+                    }
+                }
+            }
+            is ViewGroup -> view.children.forEach { collectNamedFields(it, mapsCx, fields) }
+        }
     }
 
     private fun collectText(view: View, mapsCx: Context, out: MutableList<String>) {
@@ -439,41 +494,25 @@ object MapsNotificationHarvester {
                 if (t.isNotEmpty()) out += t
                 val cd = view.contentDescription?.toString()?.trim().orEmpty()
                 if (cd.isNotEmpty()) out += cd
-                val name = runCatching {
-                    if (view.id > 0) mapsCx.resources.getResourceEntryName(view.id) else null
-                }.getOrNull()
-                if (name != null && t.isNotEmpty()) {
-                    when (name) {
-                        "nav_time", "header_text", "lockscreen_eta", "text",
-                        "nav_description", "lockscreen_oneliner", "lockscreen_directions",
-                        "title", "nav_title", "eta", "distance", "time",
-                        "alternate_time", "alternate_distance", "header_text_secondary",
-                        "status_bar_latest_event_content", "chronometer",
-                        "notification_main_column", "line1", "line2", "line3" ->
-                            out += "FIELD:$name=$t"
-                    }
-                    // Any resource name containing eta/time/distance is worth keeping tagged.
-                    if (name.contains("eta", ignoreCase = true) ||
-                        name.contains("time", ignoreCase = true) ||
-                        name.contains("dist", ignoreCase = true) ||
-                        name.contains("nav", ignoreCase = true)
-                    ) {
-                        out += "FIELD:$name=$t"
-                    }
-                }
             }
             is ViewGroup -> view.children.forEach { collectText(it, mapsCx, out) }
         }
     }
 
     private fun merge(a: MapsNavSnapshot, b: MapsNavSnapshot): MapsNavSnapshot {
-        if (a.etaText == null && a.remainingDistanceText == null) return b
-        if (b.etaText == null && b.remainingDistanceText == null) return a
+        if (!a.hasNavData) return b
+        if (!b.hasNavData) return a
         return MapsNavSnapshot(
-            etaText = b.etaText ?: a.etaText,
+            nextTurnDistanceText = b.nextTurnDistanceText ?: a.nextTurnDistanceText,
+            nextTurnDistanceMeters = b.nextTurnDistanceMeters ?: a.nextTurnDistanceMeters,
+            nextTurnInstruction = b.nextTurnInstruction ?: a.nextTurnInstruction,
             remainingDistanceText = b.remainingDistanceText ?: a.remainingDistanceText,
-            rawPreview = listOfNotNull(b.rawPreview, a.rawPreview).firstOrNull { it.isNotBlank() }.orEmpty(),
-            updatedAtMs = maxOf(a.updatedAtMs, b.updatedAtMs).coerceAtLeast(System.currentTimeMillis())
+            timeToDestinationText = b.timeToDestinationText ?: a.timeToDestinationText,
+            etaClockText = b.etaClockText ?: a.etaClockText,
+            rawPreview = listOfNotNull(b.rawPreview, a.rawPreview)
+                .firstOrNull { it.isNotBlank() }.orEmpty(),
+            updatedAtMs = maxOf(a.updatedAtMs, b.updatedAtMs)
+                .coerceAtLeast(System.currentTimeMillis())
         )
     }
 }

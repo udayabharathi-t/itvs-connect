@@ -154,16 +154,24 @@ fun MoreScreen(
                 append("Notification access: ")
                 append(if (mapsAccessOn) "On" else "Off — required")
                 append('\n')
-                append("Maps ETA: ")
-                append(mapsSnap.etaOrNa())
-                append(" · Dist left: ")
+                append("Next turn: ")
+                append(mapsSnap.nextTurnOrNa())
+                append(" · Dest left: ")
                 append(mapsSnap.distanceOrNa())
+                append(" · Time left: ")
+                append(mapsSnap.etaOrNa())
                 append('\n')
                 when {
                     !mapsAccessOn ->
                         append("Open settings below and enable iTVS Connect.")
                     mapsDebug.mapsNotifSeen && mapsDebug.lastError != null ->
                         append(mapsDebug.lastError)
+                    mapsSnap.isNavigating -> {
+                        append("Nav active")
+                        if (mapsSnap.isApproachLock) append(" · approach lock (<200 m)")
+                        val preview = mapsDebug.lastRawPreview.ifBlank { mapsSnap.rawPreview }
+                        if (preview.isNotBlank()) append(" · $preview")
+                    }
                     mapsDebug.mapsNotifSeen ->
                         append("Harvested: ${mapsDebug.lastRawPreview.ifBlank { mapsSnap.rawPreview }}")
                     mapsDebug.lastError != null ->
