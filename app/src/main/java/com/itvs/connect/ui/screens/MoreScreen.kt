@@ -171,7 +171,11 @@ fun MoreScreen(
                 append('\n')
                 when {
                     !mapsAccessOn ->
-                        append("Open settings below and enable iTVS Connect.")
+                        append(
+                            "If it says Controlled by Restricted setting: " +
+                                "Settings → Apps → iTVS Connect → ⋮ → Allow restricted settings, " +
+                                "then enable Notification access."
+                        )
                     mapsDebug.mapsNotifSeen && mapsDebug.lastError != null ->
                         append(mapsDebug.lastError)
                     mapsSnap.isNavigating -> {
