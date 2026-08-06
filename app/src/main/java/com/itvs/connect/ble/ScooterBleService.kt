@@ -184,6 +184,8 @@ class ScooterBleService : Service() {
     fun tracker(): RideTracker = rideTracker
     fun isStatsHudRunning(): Boolean = statsRotator.isRunning
     fun currentStatsPageIndex(): Int = statsRotator.currentIndex
+    fun currentNavPageIndex(): Int = statsRotator.currentNavIndex
+    fun isNavigatingHud(): Boolean = MapsNavigationStore.snapshot.isNavigating
 
     fun showStatsPage(pageIndex: Int): String {
         val label = statsRotator.showPage(pageIndex)
@@ -358,6 +360,18 @@ class ScooterBleService : Service() {
                         ble.freshLiveEconomyKmL() ?: 0,
                         settings.tankCapacityLitres
                     )
+                }
+            }
+        }
+        scope.launch {
+            MapsNavigationStore.updates.collectLatest { snap ->
+                if (!snap.isNavigating) return@collectLatest
+                // Navigation HUD: keep cluster fed even if Voice stats gesture isn't mapped.
+                if (ble.connectionState.value is ConnectionState.Connected &&
+                    !statsRotator.isRunning
+                ) {
+                    statsRotator.start(resetIndex = true)
+                    notify("Nav HUD · active")
                 }
             }
         }

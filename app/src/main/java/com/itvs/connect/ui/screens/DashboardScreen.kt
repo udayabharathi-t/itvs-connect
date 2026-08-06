@@ -133,24 +133,35 @@ fun DashboardScreen(
             Spacer(Modifier.height(16.dp))
         }
 
-        if (ui.connection is ConnectionState.Connected && ui.telemetryActive) {
+        if (ui.connection is ConnectionState.Connected && (ui.telemetryActive || ui.navigating)) {
             SectionHeader(
                 "Cluster display",
-                if (ui.clusterHudRunning) {
-                    "Showing on scooter · tap to switch (Voice button optional)"
-                } else {
-                    "Tap a stat to show it on the scooter cluster"
+                when {
+                    ui.navigating && ui.navApproachLock ->
+                        "Navigation · last 200 m — locked on next turn"
+                    ui.navigating ->
+                        "Navigation · auto-rotates Next turn / Dest / Time (tap to jump)"
+                    ui.clusterHudRunning ->
+                        "Showing on scooter · tap to switch (Voice button optional)"
+                    else ->
+                        "Tap a stat to show it on the scooter cluster"
                 }
             )
+            val labels = if (ui.navigating) {
+                ClusterStatsRotator.NAV_PAGE_LABELS
+            } else {
+                ClusterStatsRotator.PAGE_LABELS
+            }
             Row(
                 modifier = Modifier
                     .fillMaxWidth()
                     .horizontalScroll(rememberScrollState()),
                 horizontalArrangement = Arrangement.spacedBy(8.dp)
             ) {
-                ClusterStatsRotator.PAGE_LABELS.forEachIndexed { index, label ->
-                    val selected = ui.clusterHudRunning && ui.clusterPageIndex == index
-                    val colors = if (selected) {
+                labels.forEachIndexed { index, label ->
+                    val selected = ui.clusterHudRunning && ui.clusterPageIndex == index &&
+                        !(ui.navigating && ui.navApproachLock && index != 0)
+                    val colors = if (selected || (ui.navApproachLock && index == 0)) {
                         ButtonDefaults.buttonColors(
                             containerColor = MaterialTheme.colorScheme.secondary
                         )

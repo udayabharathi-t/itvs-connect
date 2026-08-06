@@ -5,6 +5,7 @@ import androidx.lifecycle.AndroidViewModel
 import androidx.lifecycle.viewModelScope
 import com.itvs.connect.ble.ClusterStatsRotator
 import com.itvs.connect.ble.ConnectionState
+import com.itvs.connect.ble.MapsNavigationStore
 import com.itvs.connect.ble.ScooterBleManager
 import com.itvs.connect.ble.ScooterBleService
 import com.itvs.connect.data.AppDatabase
@@ -37,7 +38,9 @@ data class DashboardUi(
     val discovered: List<com.itvs.connect.ble.DiscoveredDevice> = emptyList(),
     val statusMessage: String = "",
     val clusterPageIndex: Int = 0,
-    val clusterHudRunning: Boolean = false
+    val clusterHudRunning: Boolean = false,
+    val navigating: Boolean = false,
+    val navApproachLock: Boolean = false
 )
 
 class AppViewModel(app: Application) : AndroidViewModel(app) {
@@ -62,6 +65,7 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
     private val _clusterHudRunning = kotlinx.coroutines.flow.MutableStateFlow(false)
     private var boundService: ScooterBleService? = null
     private var activeRideCollectJob: Job? = null
+    private var hudRefreshJob: Job? = null
 
     val dashboard: StateFlow<DashboardUi> = kotlinx.coroutines.flow.combine(
         listOf(
@@ -80,9 +84,11 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
             ble.discoveredDevices,
             ble.statusMessage,
             _clusterPageIndex,
-            _clusterHudRunning
+            _clusterHudRunning,
+            MapsNavigationStore.updates
         )
     ) { values ->
+        val maps = values[16] as com.itvs.connect.ble.MapsNavSnapshot
         DashboardUi(
             connection = values[0] as ConnectionState,
             fuelPercent = values[1] as Int,
@@ -99,7 +105,9 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
             discovered = values[12] as List<com.itvs.connect.ble.DiscoveredDevice>,
             statusMessage = values[13] as String,
             clusterPageIndex = values[14] as Int,
-            clusterHudRunning = values[15] as Boolean
+            clusterHudRunning = values[15] as Boolean,
+            navigating = maps.isNavigating,
+            navApproachLock = maps.isApproachLock
         )
     }.stateIn(viewModelScope, SharingStarted.Eagerly, DashboardUi())
 
@@ -107,6 +115,7 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
         boundService = service
         boundTracker = service?.tracker()
         activeRideCollectJob?.cancel()
+        hudRefreshJob?.cancel()
         if (service == null) {
             _activeRide.value = null
             _clusterHudRunning.value = false
@@ -114,6 +123,12 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
         }
         activeRideCollectJob = viewModelScope.launch {
             service.tracker().activeRide.collect { _activeRide.value = it }
+        }
+        hudRefreshJob = viewModelScope.launch {
+            while (true) {
+                refreshClusterHudState()
+                delay(1_000)
+            }
         }
         refreshClusterHudState()
     }
@@ -129,13 +144,22 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
     fun refreshClusterHudState() {
         val svc = boundService ?: return
         _clusterHudRunning.value = svc.isStatsHudRunning()
-        _clusterPageIndex.value = svc.currentStatsPageIndex()
+        _clusterPageIndex.value = if (svc.isNavigatingHud()) {
+            svc.currentNavPageIndex()
+        } else {
+            svc.currentStatsPageIndex()
+        }
     }
 
     fun showClusterPage(index: Int) {
         ScooterBleService.startShowStatsPage(getApplication(), index)
         _clusterHudRunning.value = true
-        _clusterPageIndex.value = index.coerceIn(0, ClusterStatsRotator.PAGE_COUNT - 1)
+        val max = if (MapsNavigationStore.snapshot.isNavigating) {
+            ClusterStatsRotator.NAV_PAGE_COUNT - 1
+        } else {
+            ClusterStatsRotator.PAGE_COUNT - 1
+        }
+        _clusterPageIndex.value = index.coerceIn(0, max)
         viewModelScope.launch {
             delay(150)
             refreshClusterHudState()
