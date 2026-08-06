@@ -5,6 +5,10 @@ A better, local-first companion for TVS SmartXonnect scooters (Jupiter and simil
 Built from the reverse-engineering work documented in
 [overclock98/JupiterRideCompanion](https://github.com/overclock98/JupiterRideCompanion) — without the official app’s login, cloud dependency, or flaky ride tracking.
 
+## Compatibility disclaimer
+
+**Tested on the TVS Jupiter 110 cc (SmartXonnect cluster).** Other TVS SmartXonnect bikes may work, but they are not verified yet. We need more riders to try their models and report what works (or breaks) so support can expand.
+
 ## v1 goals
 
 - **No login / no backend** — pair over BLE and keep everything on-device

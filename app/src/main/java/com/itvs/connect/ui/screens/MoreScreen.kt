@@ -73,7 +73,15 @@ fun MoreScreen(
             .verticalScroll(rememberScrollState())
             .padding(20.dp)
     ) {
-        SectionHeader("More", "Local settings, parked history, bookmarks. Navigation arrives in v2.")
+        SectionHeader("More", "Local settings, parked history, bookmarks, and Maps nav harvest.")
+
+        Text(
+            "Tested on the TVS Jupiter 110 cc. Other SmartXonnect bikes are unverified — " +
+                "more rider reports will help expand support.",
+            style = MaterialTheme.typography.bodyMedium,
+            color = MaterialTheme.colorScheme.onSurfaceVariant,
+            modifier = Modifier.padding(bottom = 16.dp)
+        )
 
         Text("Paired scooter", style = MaterialTheme.typography.titleLarge)
         Spacer(Modifier.height(8.dp))
