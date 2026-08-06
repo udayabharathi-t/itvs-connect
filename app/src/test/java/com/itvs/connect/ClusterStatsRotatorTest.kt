@@ -191,10 +191,65 @@ class ClusterStatsRotatorTest {
         assertThat(snap.nextTurnDistanceText).isEqualTo("200 m")
         assertThat(snap.nextTurnDistanceMeters).isEqualTo(200)
         assertThat(snap.nextTurnInstruction).contains("Turn right")
+        assertThat(snap.nextTurnManeuverOrNull()).isEqualTo("Turn right")
         assertThat(snap.remainingDistanceText).isEqualTo("4.2 km")
         assertThat(snap.timeToDestinationText).isEqualTo("15m")
+        assertThat(snap.timeLeftOrNa()).isEqualTo("15m")
         assertThat(snap.etaClockText).isEqualTo("4:32 PM")
+        // Time left must not fall back to arrival clock.
+        assertThat(snap.timeLeftOrNa()).doesNotContain("4:32")
         assertThat(snap.isApproachLock).isTrue()
+    }
+
+    @Test
+    fun destLeftPrefersTripDistanceOverNextTurn() {
+        val snap = MapsNavParser.fromGmapsFields(
+            mapOf(
+                "nav_title" to "150 m",
+                "nav_description" to "Turn left",
+                // Missing / wrong remaining in one field should not pin Dest to next-turn.
+                "text" to "150 m",
+                "nav_time" to "1 hr 10 min · 28.4 km · 6:15 PM"
+            )
+        )
+        assertThat(snap.nextTurnDistanceText).isEqualTo("150 m")
+        assertThat(snap.remainingDistanceText).isEqualTo("28.4 km")
+        assertThat(snap.timeToDestinationText).isEqualTo("1h 10m")
+        assertThat(snap.timeLeftOrNa()).isEqualTo("1h 10m")
+    }
+
+    @Test
+    fun preferDestinationDistanceIgnoresNextTurnScale() {
+        assertThat(
+            MapsNavParser.preferDestinationDistance(
+                candidate = "200 m",
+                previous = "12.5 km",
+                nextTurn = "200 m"
+            )
+        ).isEqualTo("12.5 km")
+        assertThat(
+            MapsNavParser.preferDestinationDistance(
+                candidate = "200 m",
+                previous = null,
+                nextTurn = "200 m",
+                extras = listOf("200 m", "8 km")
+            )
+        ).isEqualTo("8 km")
+    }
+
+    @Test
+    fun asTravelDurationRejectsArrivalClock() {
+        assertThat(MapsNavParser.asTravelDuration("4:32 PM")).isNull()
+        assertThat(MapsNavParser.asTravelDuration("15 min")).isEqualTo("15m")
+        assertThat(MapsNavParser.asTravelDuration("1 hr 5 min")).isEqualTo("1h 5m")
+    }
+
+    @Test
+    fun abbreviateManeuverForCluster() {
+        assertThat(MapsNavParser.abbreviateManeuver("Turn left onto Mount Road"))
+            .isEqualTo("Turn left")
+        assertThat(MapsNavParser.abbreviateManeuver("Make a U-turn")).isEqualTo("U turn")
+        assertThat(PacketBuilder.sanitizeClusterText("Turn left")).isEqualTo("Turn left")
     }
 
     @Test
@@ -227,19 +282,40 @@ class ClusterStatsRotatorTest {
                 mapsEta = "15m",
                 mapsDistance = "4.2 km",
                 nextTurnDistance = "200 m",
+                nextTurnManeuver = "Turn left",
                 timeToDestination = "15m",
                 navigating = true,
                 approachLock = true
             )
         )
         assertThat(pages.map { it.first }).containsExactly(
-            "Next turn:",
+            "Turn left",
             "Dest left:",
             "Time left:"
         ).inOrder()
         assertThat(pages[0].second).isEqualTo("200 m")
         assertThat(pages[1].second).isEqualTo("4.2 km")
         assertThat(pages[2].second).isEqualTo("15m")
+    }
+
+    @Test
+    fun fromLiveUsesDurationNotClockForTimeLeft() {
+        val maps = MapsNavSnapshot(
+            nextTurnDistanceText = "300 m",
+            nextTurnDistanceMeters = 300,
+            nextTurnInstruction = "Turn left onto Anna Salai",
+            remainingDistanceText = "9.1 km",
+            timeToDestinationText = "22m",
+            etaClockText = "5:10 PM",
+            updatedAtMs = System.currentTimeMillis()
+        )
+        val snap = ClusterStatsRotator.fromLive(null, null, maps)
+        assertThat(snap.timeToDestination).isEqualTo("22m")
+        assertThat(snap.mapsDistance).isEqualTo("9.1 km")
+        assertThat(snap.nextTurnManeuver).isEqualTo("Turn left")
+        val pages = ClusterStatsRotator.navPages(snap)
+        assertThat(pages[0].first).isEqualTo("Turn left")
+        assertThat(pages[2].second).isEqualTo("22m")
     }
 
     @Test

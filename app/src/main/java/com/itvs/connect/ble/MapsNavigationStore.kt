@@ -42,17 +42,26 @@ data class MapsNavSnapshot(
         get() = isNavigating &&
             (nextTurnDistanceMeters ?: Int.MAX_VALUE) <= APPROACH_LOCK_METERS
 
+    /** Arrival clock or duration — for debug / legacy Maps ETA page. */
     fun etaOrNa(): String =
         if (isFresh) timeToDestinationText?.takeIf { it.isNotBlank() }
             ?: etaClockText?.takeIf { it.isNotBlank() }
             ?: "N/A"
         else "N/A"
 
+    /** Travel time remaining only (never the arrival clock). */
+    fun timeLeftOrNa(): String =
+        if (isFresh) timeToDestinationText?.takeIf { it.isNotBlank() } ?: "N/A" else "N/A"
+
     fun distanceOrNa(): String =
         if (isFresh) remainingDistanceText?.takeIf { it.isNotBlank() } ?: "N/A" else "N/A"
 
     fun nextTurnOrNa(): String =
         if (isFresh) nextTurnDistanceText?.takeIf { it.isNotBlank() } ?: "N/A" else "N/A"
+
+    /** Short maneuver label for the cluster (Turn left / Right / …). */
+    fun nextTurnManeuverOrNull(): String? =
+        if (isFresh) MapsNavParser.abbreviateManeuver(nextTurnInstruction) else null
 
     companion object {
         const val STALE_MS = 180_000L
@@ -72,12 +81,20 @@ object MapsNavigationStore {
     fun update(snap: MapsNavSnapshot) {
         if (!snap.hasNavData) return
         val prev = snapshot
+        val mergedRemaining = MapsNavParser.preferDestinationDistance(
+            candidate = snap.remainingDistanceText,
+            previous = prev.remainingDistanceText,
+            nextTurn = snap.nextTurnDistanceText ?: prev.nextTurnDistanceText
+        )
         val next = MapsNavSnapshot(
             nextTurnDistanceText = snap.nextTurnDistanceText ?: prev.nextTurnDistanceText,
             nextTurnDistanceMeters = snap.nextTurnDistanceMeters ?: prev.nextTurnDistanceMeters,
             nextTurnInstruction = snap.nextTurnInstruction ?: prev.nextTurnInstruction,
-            remainingDistanceText = snap.remainingDistanceText ?: prev.remainingDistanceText,
-            timeToDestinationText = snap.timeToDestinationText ?: prev.timeToDestinationText,
+            remainingDistanceText = mergedRemaining,
+            // Duration only — never promote arrival clock into time-left.
+            timeToDestinationText = MapsNavParser.asTravelDuration(
+                snap.timeToDestinationText
+            ) ?: prev.timeToDestinationText,
             etaClockText = snap.etaClockText ?: prev.etaClockText,
             rawPreview = snap.rawPreview.ifBlank { prev.rawPreview },
             updatedAtMs = System.currentTimeMillis()
@@ -144,22 +161,49 @@ object MapsNavParser {
         var remaining: String? = null
         var duration: String? = null
         var clock: String? = null
+        val distanceCandidates = mutableListOf<String>()
 
-        fields["nav_title"]?.let { nextTurnDist = normalizeDistanceLabel(it) ?: it.trim() }
+        fields["nav_title"]?.let {
+            nextTurnDist = normalizeDistanceLabel(it) ?: it.trim().takeIf { t -> looksLikeDistance(t) }
+        }
         fields["nav_description"]?.let { nextTurnInstr = it.trim().takeIf { t -> t.isNotBlank() } }
+        // Icon contentDescription often carries the maneuver when the arrow is an image.
+        fields["nav_icon_cd"]?.let {
+            if (nextTurnInstr == null) nextTurnInstr = it.trim().takeIf { t -> t.isNotBlank() }
+        }
 
-        val timeLine = fields["nav_time"] ?: fields["header_text"]
-        if (timeLine != null) {
+        // Primary trip summary line (GMapsParser): duration · remaining · clock
+        for (key in listOf("nav_time", "header_text", "alternate_time")) {
+            val timeLine = fields[key] ?: continue
             parseNavTimeTriple(timeLine)?.let { (dur, dist, clk) ->
-                duration = duration ?: dur
-                remaining = remaining ?: dist
+                duration = asTravelDuration(dur) ?: duration
+                if (dist != null) {
+                    distanceCandidates += dist
+                    // Prefer km-scale (or larger) distances from the summary line as destination.
+                    if (remaining == null || isBetterDestination(dist, remaining, nextTurnDist)) {
+                        remaining = dist
+                    }
+                }
                 clock = clock ?: clk
             }
         }
+        fields["alternate_distance"]?.let { normalizeDistanceLabel(it) }?.let {
+            distanceCandidates += it
+            if (remaining == null || isBetterDestination(it, remaining, nextTurnDist)) {
+                remaining = it
+            }
+        }
 
-        val lockDir = fields["lockscreen_directions"] ?: fields["title"]
-        if (lockDir != null && nextTurnDist == null) {
+        val lockDir = fields["lockscreen_directions"]
+        if (lockDir != null) {
             parseLockscreenDirections(lockDir)?.let { (dist, instr) ->
+                if (nextTurnDist == null) nextTurnDist = dist
+                nextTurnInstr = nextTurnInstr ?: instr
+            }
+        }
+        // `title` can be either next-turn directions or chrome — only use if still missing next turn.
+        if (nextTurnDist == null) {
+            fields["title"]?.let { parseLockscreenDirections(it) }?.let { (dist, instr) ->
                 nextTurnDist = dist
                 nextTurnInstr = nextTurnInstr ?: instr
             }
@@ -168,18 +212,46 @@ object MapsNavParser {
             if (nextTurnInstr == null) nextTurnInstr = it.trim()
         }
 
-        val lockEta = fields["lockscreen_eta"] ?: fields["text"]
-        if (lockEta != null) {
+        // lockscreen_eta is usually destination summary; avoid treating generic `text` as
+        // remaining when it is often the next-turn line on newer Maps builds.
+        fields["lockscreen_eta"]?.let { lockEta ->
             parseNavTimeTriple(lockEta)?.let { (dur, dist, clk) ->
-                duration = duration ?: dur
-                remaining = remaining ?: dist
+                duration = asTravelDuration(dur) ?: duration
+                if (dist != null) {
+                    distanceCandidates += dist
+                    if (remaining == null || isBetterDestination(dist, remaining, nextTurnDist)) {
+                        remaining = dist
+                    }
+                }
                 clock = clock ?: clk
             }
-            if (duration == null && clock == null) {
-                extractDuration(lockEta)?.let { duration = it }
+            if (duration == null) {
+                asTravelDuration(extractDuration(lockEta))?.let { duration = it }
+            }
+            if (clock == null) {
                 CLOCK_ETA.find(lockEta)?.groupValues?.getOrNull(1)?.let { clock = it.trim() }
             }
         }
+
+        // Sweep every field for leftover distances / durations (OEM layout variants).
+        for ((_, value) in fields) {
+            normalizeDistanceLabel(value)?.let { distanceCandidates += it }
+            parseNavTimeTriple(value)?.let { (dur, dist, clk) ->
+                duration = asTravelDuration(dur) ?: duration
+                if (dist != null) distanceCandidates += dist
+                clock = clock ?: clk
+            }
+            if (duration == null) {
+                asTravelDuration(extractDuration(value))?.let { duration = it }
+            }
+        }
+
+        remaining = preferDestinationDistance(
+            candidate = remaining,
+            previous = null,
+            nextTurn = nextTurnDist,
+            extras = distanceCandidates
+        )
 
         if (nextTurnDist == null && remaining == null && duration == null && clock == null) {
             return MapsNavSnapshot.Empty
@@ -191,7 +263,7 @@ object MapsNavParser {
             nextTurnDistanceMeters = nextTurnDist?.let { distanceToMeters(it) },
             nextTurnInstruction = nextTurnInstr,
             remainingDistanceText = remaining,
-            timeToDestinationText = duration,
+            timeToDestinationText = asTravelDuration(duration),
             etaClockText = clock,
             rawPreview = preview,
             updatedAtMs = System.currentTimeMillis()
@@ -236,16 +308,23 @@ object MapsNavParser {
         var remaining: String? = fromFields.remainingDistanceText
         var clock: String? = fromFields.etaClockText
         var nextTurn: String? = fromFields.nextTurnDistanceText
+        val distanceCandidates = mutableListOf<String>()
+        remaining?.let { distanceCandidates += it }
 
         for (line in cleaned) {
             parseNavTimeTriple(line)?.let { (dur, dist, clk) ->
-                duration = duration ?: dur
-                remaining = remaining ?: dist
+                duration = asTravelDuration(dur) ?: duration
+                if (dist != null) {
+                    distanceCandidates += dist
+                    if (remaining == null || isBetterDestination(dist, remaining, nextTurn)) {
+                        remaining = dist
+                    }
+                }
                 clock = clock ?: clk
             }
+            normalizeDistanceLabel(line)?.let { distanceCandidates += it }
         }
-        duration = duration ?: extractDuration(blob)
-        remaining = remaining ?: extractDistance(blob)
+        duration = asTravelDuration(duration) ?: asTravelDuration(extractDuration(blob))
         clock = clock ?: CLOCK_ETA.find(blob)?.groupValues?.getOrNull(1)?.trim()
             ?: ARRIVE_BY.find(blob)?.groupValues?.getOrNull(1)?.trim()
 
@@ -260,6 +339,13 @@ object MapsNavParser {
             }
         }
 
+        remaining = preferDestinationDistance(
+            candidate = remaining,
+            previous = null,
+            nextTurn = nextTurn,
+            extras = distanceCandidates + listOfNotNull(extractLargestDistance(blob, exclude = nextTurn))
+        )
+
         if (nextTurn == null && remaining == null && duration == null && clock == null) {
             return MapsNavSnapshot.Empty
         }
@@ -269,7 +355,7 @@ object MapsNavParser {
             nextTurnDistanceMeters = nextTurn?.let { distanceToMeters(it) },
             nextTurnInstruction = fromFields.nextTurnInstruction,
             remainingDistanceText = remaining,
-            timeToDestinationText = duration,
+            timeToDestinationText = asTravelDuration(duration),
             etaClockText = clock,
             rawPreview = blob.take(200),
             updatedAtMs = System.currentTimeMillis()
@@ -346,24 +432,118 @@ object MapsNavParser {
         DIST.containsMatchIn(part) || DIST_COMPACT.containsMatchIn(part)
 
     private fun formatDurationPart(part: String): String? {
+        // Reject arrival clocks — Time left must be travel duration only.
+        if (CLOCK_ETA.containsMatchIn(part) && !looksLikeDuration(part)) return null
         DURATION_HM.find(part)?.let { m ->
             return "${m.groupValues[1]}h ${m.groupValues[2]}m"
         }
+        DURATION_H_ONLY.find(part)?.groupValues?.getOrNull(1)?.let { h ->
+            // Prefer combining with minutes if present elsewhere in the same token.
+            val mins = DURATION_MIN.find(part)?.groupValues?.getOrNull(1)
+            return if (mins != null) "${h}h ${mins}m" else "${h}h"
+        }
         DURATION_MIN.find(part)?.groupValues?.getOrNull(1)?.let { return "${it}m" }
         DURATION_MIN_COMPACT.find(part)?.groupValues?.getOrNull(1)?.let { return "${it}m" }
-        DURATION_H_ONLY.find(part)?.groupValues?.getOrNull(1)?.let { return "${it}h" }
         return null
     }
 
     private fun extractDuration(blob: String): String? = formatDurationPart(blob)
 
-    private fun extractDistance(blob: String): String? {
-        var best: Pair<Double, String>? = null
+    private val NORMALIZED_DURATION = Regex(
+        """^(\d{1,2}h(?:\s+\d{1,2}m)?|\d{1,3}m)$""",
+        RegexOption.IGNORE_CASE
+    )
+
+    /**
+     * Keep only travel-duration strings (e.g. `15m`, `1h 20m`). Rejects clocks like `4:32 PM`.
+     */
+    fun asTravelDuration(raw: String?): String? {
+        if (raw.isNullOrBlank()) return null
+        val trimmed = raw.trim()
+        // Already normalized by us — keep as-is.
+        if (NORMALIZED_DURATION.matches(trimmed)) return trimmed
+        // Pure clock → not a duration.
+        if (CLOCK_ETA.matches(trimmed) || ARRIVE_BY.containsMatchIn(trimmed)) return null
+        if (trimmed.contains(':') && !looksLikeDuration(trimmed)) return null
+        return formatDurationPart(trimmed) ?: trimmed.takeIf { looksLikeDuration(it) }
+    }
+
+    /** Short cluster-safe maneuver word for the next-turn page (row 1). */
+    fun abbreviateManeuver(instruction: String?): String? {
+        if (instruction.isNullOrBlank()) return null
+        val lower = instruction.lowercase()
+        val label = when {
+            "u-turn" in lower || "u turn" in lower || "uturn" in lower -> "U turn"
+            "sharp left" in lower -> "Sharp left"
+            "sharp right" in lower -> "Sharp right"
+            "keep left" in lower || "bear left" in lower -> "Keep left"
+            "keep right" in lower || "bear right" in lower -> "Keep right"
+            "slight left" in lower -> "Slight left"
+            "slight right" in lower -> "Slight right"
+            "turn left" in lower || Regex("""\bleft\b""").containsMatchIn(lower) -> "Turn left"
+            "turn right" in lower || Regex("""\bright\b""").containsMatchIn(lower) -> "Turn right"
+            "roundabout" in lower || "rotary" in lower -> "Roundabout"
+            "merge" in lower -> "Merge"
+            "continue" in lower || "straight" in lower -> "Straight"
+            "destination" in lower || "arrive" in lower -> "Arrive"
+            else -> instruction.trim().take(17)
+        }
+        return label.take(17)
+    }
+
+    /**
+     * Choose a destination distance that is not just the next-turn distance.
+     * Prefers the longest plausible candidate (usually km remaining to destination).
+     */
+    fun preferDestinationDistance(
+        candidate: String?,
+        previous: String?,
+        nextTurn: String?,
+        extras: List<String> = emptyList()
+    ): String? {
+        val nextM = nextTurn?.let { distanceToMeters(it) }
+        val pool = (listOfNotNull(candidate, previous) + extras)
+            .mapNotNull { d ->
+                val m = distanceToMeters(d) ?: return@mapNotNull null
+                d to m
+            }
+        if (pool.isEmpty()) return null
+
+        // Prefer distances meaningfully larger than the next-turn cue.
+        val destPool = pool.filter { (_, m) ->
+            nextM == null || m > nextM + 50 || m >= 500
+        }
+        val chosen = (destPool.ifEmpty { emptyList() }).maxByOrNull { it.second }
+            ?: pool.maxByOrNull { it.second }
+        // If the best we have is basically the next-turn distance, do not call it Dest left.
+        val best = chosen ?: return null
+        if (nextM != null && best.second <= nextM + 50 && best.second < 500) {
+            return previous?.takeIf { p ->
+                val pm = distanceToMeters(p) ?: return@takeIf false
+                pm > nextM + 50 || pm >= 500
+            }
+        }
+        return normalizeDistanceLabel(best.first) ?: best.first
+    }
+
+    private fun isBetterDestination(newDist: String, current: String?, nextTurn: String?): Boolean {
+        val newM = distanceToMeters(newDist) ?: return false
+        val curM = current?.let { distanceToMeters(it) }
+        val nextM = nextTurn?.let { distanceToMeters(it) }
+        if (nextM != null && newM <= nextM + 50 && newM < 500) return false
+        if (curM == null) return true
+        return newM > curM
+    }
+
+    private fun extractLargestDistance(blob: String, exclude: String?): String? {
+        val excludeM = exclude?.let { distanceToMeters(it) }
+        var best: Pair<Int, String>? = null
         val matches = DIST.findAll(blob) + DIST_COMPACT.findAll(blob)
         for (m in matches) {
             val normalized = normalizeDistanceMatch(m) ?: continue
             val meters = distanceToMeters(normalized) ?: continue
-            if (best == null || meters > best.first) best = meters.toDouble() to normalized
+            if (excludeM != null && meters <= excludeM + 50) continue
+            if (best == null || meters > best.first) best = meters to normalized
         }
         return best?.second
     }
