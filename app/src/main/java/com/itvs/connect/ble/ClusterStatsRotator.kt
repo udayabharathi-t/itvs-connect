@@ -16,6 +16,8 @@ import kotlinx.coroutines.launch
  * Ride stats: Voice / phone picker advances pages (no timer rotate).
  * Navigation (Google Maps TBT active): auto-rotates Next turn → Dest left →
  * Time left; within 200 m of the next turn, locks on Next turn only.
+ * While navigating, BLE also sends native `0x5A 0x4E` control packets so the
+ * cluster draws the right-side pictogram (not just text rows).
  */
 class ClusterStatsRotator(
     private val scope: CoroutineScope,
@@ -165,6 +167,8 @@ class ClusterStatsRotator(
         val mapsEta: String,
         val mapsDistance: String,
         val nextTurnDistance: String = "N/A",
+        /** Abbreviated maneuver for cluster row 1, e.g. `Turn left`. */
+        val nextTurnManeuver: String? = null,
         val timeToDestination: String = "N/A",
         val navigating: Boolean = false,
         val approachLock: Boolean = false
@@ -213,8 +217,10 @@ class ClusterStatsRotator(
         }
 
         fun navPages(s: StatsSnapshot): List<Pair<String, String>> {
+            // Cluster cannot show arrow bitmaps — put the maneuver word on row 1.
+            val nextTurnLabel = s.nextTurnManeuver?.takeIf { it.isNotBlank() } ?: "Next turn:"
             return listOf(
-                "Next turn:" to s.nextTurnDistance,
+                nextTurnLabel to s.nextTurnDistance,
                 "Dest left:" to s.mapsDistance,
                 "Time left:" to s.timeToDestination
             )
@@ -257,7 +263,9 @@ class ClusterStatsRotator(
                 mapsEta = maps.etaOrNa(),
                 mapsDistance = maps.distanceOrNa(),
                 nextTurnDistance = maps.nextTurnOrNa(),
-                timeToDestination = maps.etaOrNa(),
+                nextTurnManeuver = maps.nextTurnManeuverOrNull(),
+                // Travel duration only — never the arrival clock.
+                timeToDestination = maps.timeLeftOrNa(),
                 navigating = maps.isNavigating,
                 approachLock = maps.isApproachLock
             )

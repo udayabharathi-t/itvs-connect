@@ -12,6 +12,7 @@ import android.view.LayoutInflater
 import android.view.View
 import android.view.ViewGroup
 import android.widget.FrameLayout
+import android.widget.ImageView
 import android.widget.RemoteViews
 import android.widget.TextView
 import androidx.core.view.children
@@ -483,6 +484,27 @@ object MapsNotificationHarvester {
                     }
                 }
             }
+            is ImageView -> {
+                // GMapsParser reads the arrow bitmap; we keep contentDescription as the
+                // text stand-in for the maneuver (cluster cannot show images).
+                val cd = view.contentDescription?.toString()?.replace('\u00A0', ' ')?.trim().orEmpty()
+                if (cd.isEmpty()) return
+                val name = runCatching {
+                    if (view.id > 0) mapsCx.resources.getResourceEntryName(view.id) else null
+                }.getOrNull()
+                if (name == "nav_notification_icon" ||
+                    name == "right_icon" ||
+                    name == "lockscreen_notification_icon" ||
+                    name?.contains("nav", ignoreCase = true) == true ||
+                    name?.contains("icon", ignoreCase = true) == true
+                ) {
+                    if (!fields.containsKey("nav_icon_cd") ||
+                        (fields["nav_icon_cd"]?.length ?: 0) < cd.length
+                    ) {
+                        fields["nav_icon_cd"] = cd
+                    }
+                }
+            }
             is ViewGroup -> view.children.forEach { collectNamedFields(it, mapsCx, fields) }
         }
     }
@@ -502,12 +524,18 @@ object MapsNotificationHarvester {
     private fun merge(a: MapsNavSnapshot, b: MapsNavSnapshot): MapsNavSnapshot {
         if (!a.hasNavData) return b
         if (!b.hasNavData) return a
+        val nextTurn = b.nextTurnDistanceText ?: a.nextTurnDistanceText
         return MapsNavSnapshot(
-            nextTurnDistanceText = b.nextTurnDistanceText ?: a.nextTurnDistanceText,
+            nextTurnDistanceText = nextTurn,
             nextTurnDistanceMeters = b.nextTurnDistanceMeters ?: a.nextTurnDistanceMeters,
             nextTurnInstruction = b.nextTurnInstruction ?: a.nextTurnInstruction,
-            remainingDistanceText = b.remainingDistanceText ?: a.remainingDistanceText,
-            timeToDestinationText = b.timeToDestinationText ?: a.timeToDestinationText,
+            remainingDistanceText = MapsNavParser.preferDestinationDistance(
+                candidate = b.remainingDistanceText,
+                previous = a.remainingDistanceText,
+                nextTurn = nextTurn
+            ),
+            timeToDestinationText = MapsNavParser.asTravelDuration(b.timeToDestinationText)
+                ?: a.timeToDestinationText,
             etaClockText = b.etaClockText ?: a.etaClockText,
             rawPreview = listOfNotNull(b.rawPreview, a.rawPreview)
                 .firstOrNull { it.isNotBlank() }.orEmpty(),

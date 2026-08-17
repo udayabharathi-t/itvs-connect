@@ -29,6 +29,17 @@ object BleConstants {
     const val DATA_ID_RIDER_NAME: Byte = 0x52
     const val DATA_ID_MESSAGE1: Byte = 0x4C
     const val DATA_ID_MESSAGE2: Byte = 0x63
+    /** Native nav HUD control (pictogram + distances). Start byte is [START_BYTE_NAV_CONTROL]. */
+    const val DATA_ID_NAV_CONTROL: Byte = 0x4E
+    /** Nav text row 1 (street / metrics). Uses normal [START_BYTE]. */
+    const val DATA_ID_NAV_TEXT1: Byte = 0x4F
+    /** Nav text row 2 (optional). */
+    const val DATA_ID_NAV_TEXT2: Byte = 0x50
+    /**
+     * Navigation control frames use `0x5A`, not the message/ping start `0x5B`.
+     * Matches JupiterRideCompanion `BleNavigationPacketBuilder`.
+     */
+    const val START_BYTE_NAV_CONTROL: Byte = 0x5A
     const val DATA_ID_CALL_IN: Byte = 0x43
     const val DATA_ID_CALL_OUT: Byte = 0x44
 

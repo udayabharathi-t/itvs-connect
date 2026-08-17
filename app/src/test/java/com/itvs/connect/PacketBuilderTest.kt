@@ -61,6 +61,61 @@ class PacketBuilderTest {
     }
 
     @Test
+    fun navigationControlPacket_matchesReferenceLayout() {
+        val packet = PacketBuilder.buildNavigationControlPacket(
+            distanceMeters = 200,
+            remainingTimeMinutes = 15,
+            remainingDistanceMeters = 4200,
+            maneuverId = 3,
+            isActive = true
+        )
+        assertThat(packet.size).isEqualTo(20)
+        assertThat(packet[0]).isEqualTo(BleConstants.START_BYTE_NAV_CONTROL) // 0x5A
+        assertThat(packet[1]).isEqualTo(BleConstants.DATA_ID_NAV_CONTROL) // 0x4E
+        assertThat(packet[2]).isEqualTo(0.toByte())
+        assertThat(packet[3].toInt() and 0xFF).isEqualTo(200)
+        assertThat(packet[4]).isEqualTo(0.toByte())
+        assertThat(packet[5].toInt() and 0xFF).isEqualTo(15)
+        // 4200 = 0x1068 → bytes 06=0x00, 07=0x10, 08=0x68
+        assertThat(packet[6].toInt() and 0xFF).isEqualTo(0x00)
+        assertThat(packet[7].toInt() and 0xFF).isEqualTo(0x10)
+        assertThat(packet[8].toInt() and 0xFF).isEqualTo(0x68)
+        assertThat(packet[9].toInt() and 0xFF).isEqualTo(3)
+        assertThat(packet[10]).isEqualTo(1.toByte())
+        assertThat(packet[11]).isEqualTo(1.toByte())
+        assertThat(packet[19]).isEqualTo(BleConstants.END_BYTE)
+    }
+
+    @Test
+    fun navigationPackets_includeControlAndText() {
+        val packets = PacketBuilder.buildNavigationPackets(
+            distanceMeters = 80,
+            remainingTimeMinutes = 5,
+            remainingDistanceMeters = 900,
+            maneuverId = 0,
+            textRow1 = "Dest left:",
+            textRow2 = "0.9 km",
+            isActive = true
+        )
+        assertThat(packets).hasSize(3)
+        assertThat(packets[0][0]).isEqualTo(BleConstants.START_BYTE_NAV_CONTROL)
+        assertThat(packets[1][1]).isEqualTo(BleConstants.DATA_ID_NAV_TEXT1)
+        assertThat(packets[2][1]).isEqualTo(BleConstants.DATA_ID_NAV_TEXT2)
+    }
+
+    @Test
+    fun maneuverPictogram_fromInstruction() {
+        assertThat(com.itvs.connect.ble.ManeuverPictogram.fromInstruction("Turn left onto NH44"))
+            .isEqualTo(0)
+        assertThat(com.itvs.connect.ble.ManeuverPictogram.fromInstruction("Turn right"))
+            .isEqualTo(3)
+        assertThat(com.itvs.connect.ble.ManeuverPictogram.fromInstruction("At the roundabout take the 2nd exit straight"))
+            .isEqualTo(68)
+        assertThat(com.itvs.connect.ble.ManeuverPictogram.fromInstruction("You have arrived"))
+            .isEqualTo(8)
+    }
+
+    @Test
     fun telemetryParser_readsOdoFuelEconomy() {
         val odo = ByteArray(20)
         odo[0] = BleConstants.START_BYTE

@@ -39,13 +39,35 @@ Byte 17 = `1` triggers Find Me (horn/lights). Heartbeat every 2s.
 
 ## Messages
 
-`0x4C` / `0x63` — 17 UTF-8 chars per row, no checksum.
+`0x4C` / `0x63` — 17 UTF-8 chars per row, start `0x5B`, end `0xFF`, no checksum.
+
+## Navigation HUD (outbound)
+
+Derived from JupiterRideCompanion `BleNavigationPacketBuilder`.
+
+### Control (`0x5A 0x4E`)
+
+Start byte is **`0x5A`** (not `0x5B`). Sent ~every 2s while Maps TBT is active.
+
+| Byte | Field |
+|---|---|
+| 2–3 | Distance to turn (meters, big-endian; ≤255 uses `00 xx`) |
+| 4–5 | Remaining time (minutes) |
+| 6–8 | Remaining trip distance (meters, 24-bit) |
+| 9 | **Pictogram ID** (native right-side arrow) |
+| 10 | Text rows (`1`) |
+| 11 | Active (`1`) / clear (`0`) |
+| 19 | `0xFF` (no checksum) |
+
+Pictogram examples: `0` left, `3` right, `6` U-turn, `7` straight, `8` arrive, `65–71` India LHT roundabouts. Resolved from Maps instruction text keywords.
+
+### Nav text (`0x5B 0x4F` / `0x50`)
+
+Street / metrics under the native arrow (same 17-char layout as messages).
+
+Maps notification harvesting feeds next-turn, remaining distance, and duration; Dest left must not reuse next-turn meters.
 
 ## Button detection
 
 Hold ≈ ≥3 consecutive `0x10` packets; release on next `0x11`/`0x18`/`0x19`.  
 App coalesces taps with a configurable double-press window.
-
-## Out of scope (v2)
-
-Navigation control packets `0x4E` / `0x4F` / `0x50` and Maps notification harvesting.

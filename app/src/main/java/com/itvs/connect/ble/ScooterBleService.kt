@@ -57,6 +57,8 @@ class ScooterBleService : Service() {
     /** True after the user taps Disconnect — pause auto-reconnect until next app open / BT on. */
     private var userDisconnected = false
     private lateinit var statsRotator: ClusterStatsRotator
+    /** Tracks whether the last cluster flash used native nav packets. */
+    private var wasSendingNavHud = false
 
     private lateinit var gestureDetector: ButtonGestureDetector
 
@@ -480,7 +482,18 @@ class ScooterBleService : Service() {
 
     private fun flashCluster(row1: String, row2: String = "") {
         flashClearJob?.cancel()
-        ble.sendClusterMessage(row1, row2)
+        val maps = MapsNavigationStore.snapshot
+        if (maps.isNavigating) {
+            // Native right-side arrow + distances via 0x5A 0x4E; text via 0x4F.
+            ble.sendNavigationHud(maps, textRow1 = row1, textRow2 = row2)
+            wasSendingNavHud = true
+        } else {
+            if (wasSendingNavHud) {
+                ble.clearNavigationHud()
+                wasSendingNavHud = false
+            }
+            ble.sendClusterMessage(row1, row2)
+        }
         flashClearJob = scope.launch {
             delay(BleConstants.CLUSTER_FLASH_MS)
         }

@@ -119,6 +119,115 @@ object PacketBuilder {
         return packets
     }
 
+    /**
+     * Native navigation HUD control (`0x5A 0x4E`).
+     *
+     * Layout (JupiterRideCompanion BleNavigationPacketBuilder):
+     * - [2-3] distance to turn (meters)
+     * - [4-5] remaining time (minutes)
+     * - [6-8] remaining trip distance (meters, 24-bit)
+     * - [9] pictogram / maneuver ID
+     * - [10] text rows (1)
+     * - [11] active flag
+     * - [19] end `0xFF` (no checksum)
+     */
+    fun buildNavigationControlPacket(
+        distanceMeters: Int,
+        remainingTimeMinutes: Int,
+        remainingDistanceMeters: Int,
+        maneuverId: Int,
+        isActive: Boolean = true
+    ): ByteArray {
+        val packet = ByteArray(20)
+        packet[0] = BleConstants.START_BYTE_NAV_CONTROL
+        packet[1] = BleConstants.DATA_ID_NAV_CONTROL
+
+        val turnM = distanceMeters.coerceIn(0, 65_535)
+        if (turnM >= 65_535) {
+            packet[2] = 0xFF.toByte()
+            packet[3] = 0xFF.toByte()
+        } else if (turnM <= 255) {
+            packet[2] = 0
+            packet[3] = turnM.toByte()
+        } else {
+            packet[2] = ((turnM shr 8) and 0xFF).toByte()
+            packet[3] = (turnM and 0xFF).toByte()
+        }
+
+        val mins = remainingTimeMinutes.coerceIn(0, 65_535)
+        if (mins <= 255) {
+            packet[4] = 0
+            packet[5] = mins.toByte()
+        } else {
+            packet[4] = ((mins shr 8) and 0xFF).toByte()
+            packet[5] = (mins and 0xFF).toByte()
+        }
+
+        val rem = remainingDistanceMeters.coerceAtLeast(0)
+        if (rem <= 255) {
+            packet[6] = 0
+            packet[7] = 0
+            packet[8] = rem.toByte()
+        } else {
+            packet[6] = ((rem shr 16) and 0xFF).toByte()
+            packet[7] = ((rem shr 8) and 0xFF).toByte()
+            packet[8] = (rem and 0xFF).toByte()
+        }
+
+        packet[9] = (maneuverId and 0xFF).toByte()
+        packet[10] = 1
+        packet[11] = if (isActive) 1 else 0
+        packet[19] = BleConstants.END_BYTE
+        return packet
+    }
+
+    /** Nav text row (`0x5B 0x4F` / `0x50`) — street name or metrics under the native arrow. */
+    fun buildNavigationTextPacket(row1: String, row2: String = ""): List<ByteArray> {
+        fun rowPacket(dataId: Byte, text: String): ByteArray {
+            val packet = ByteArray(20)
+            packet[0] = BleConstants.START_BYTE
+            packet[1] = dataId
+            val bytes = sanitizeClusterText(text).toByteArray(Charsets.UTF_8).take(17)
+            bytes.forEachIndexed { index, b -> packet[index + 2] = b }
+            packet[19] = BleConstants.END_BYTE
+            return packet
+        }
+
+        val packets = mutableListOf(rowPacket(BleConstants.DATA_ID_NAV_TEXT1, row1))
+        if (row2.isNotBlank()) {
+            packets += rowPacket(BleConstants.DATA_ID_NAV_TEXT2, row2)
+        }
+        return packets
+    }
+
+    /**
+     * Full nav update: control (pictogram + distances) then optional text rows.
+     * Inactive clears the native arrow overlay.
+     */
+    fun buildNavigationPackets(
+        distanceMeters: Int,
+        remainingTimeMinutes: Int,
+        remainingDistanceMeters: Int,
+        maneuverId: Int,
+        textRow1: String = "",
+        textRow2: String = "",
+        isActive: Boolean = true
+    ): List<ByteArray> {
+        val packets = mutableListOf(
+            buildNavigationControlPacket(
+                distanceMeters = distanceMeters,
+                remainingTimeMinutes = remainingTimeMinutes,
+                remainingDistanceMeters = remainingDistanceMeters,
+                maneuverId = maneuverId,
+                isActive = isActive
+            )
+        )
+        if (isActive && textRow1.isNotBlank()) {
+            packets += buildNavigationTextPacket(textRow1, textRow2)
+        }
+        return packets
+    }
+
     fun sanitizeClusterText(input: String): String =
         input.replace(Regex("[^A-Za-z0-9 .:/]"), "").take(17)
 }

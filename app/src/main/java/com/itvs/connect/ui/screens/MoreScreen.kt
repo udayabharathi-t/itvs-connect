@@ -163,11 +163,16 @@ fun MoreScreen(
                 append(if (mapsAccessOn) "On" else "Off — required")
                 append('\n')
                 append("Next turn: ")
+                append(mapsSnap.nextTurnManeuverOrNull()?.let { "$it " }.orEmpty())
                 append(mapsSnap.nextTurnOrNa())
                 append(" · Dest left: ")
                 append(mapsSnap.distanceOrNa())
                 append(" · Time left: ")
-                append(mapsSnap.etaOrNa())
+                append(mapsSnap.timeLeftOrNa())
+                if (mapsSnap.etaClockText != null) {
+                    append(" · Arrive ")
+                    append(mapsSnap.etaClockText)
+                }
                 append('\n')
                 when {
                     !mapsAccessOn ->
