@@ -40,6 +40,18 @@ Package id: `com.itvs.connect`
 4. Tap **Scan & pair scooter**.
 5. If pairing hangs: **Force stop TVS Connect**, keep scooter cluster ON, enable Location, then scan again and **tap your scooter** in Nearby devices.
 
+## Notification access says “Controlled by Restricted setting”
+
+Common on **Android 13+** for apps installed from an APK (not Play Store). Maps ETA / next-turn needs Notification access — unlock it once:
+
+1. Open **Settings → Apps → iTVS Connect** (or **See all apps** if it is hidden).
+2. Tap the **⋮** menu (top-right) → **Allow restricted settings**.
+3. Confirm with PIN / fingerprint if asked.
+4. Go back to **Settings → Notifications → Notification access** (or open **Notification access** from iTVS Connect → More).
+5. Turn **on** **iTVS Connect**.
+
+If **Allow restricted settings** is missing: first try enabling Notification access (so Android shows the block), then return to the app info page and open the ⋮ menu again.
+
 ## Pairing tips
 
 - Official TVS Connect must not hold the BLE link — Force stop it (removing the vehicle is optional).

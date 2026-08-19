@@ -163,15 +163,24 @@ fun MoreScreen(
                 append(if (mapsAccessOn) "On" else "Off — required")
                 append('\n')
                 append("Next turn: ")
+                append(mapsSnap.nextTurnManeuverOrNull()?.let { "$it " }.orEmpty())
                 append(mapsSnap.nextTurnOrNa())
                 append(" · Dest left: ")
                 append(mapsSnap.distanceOrNa())
                 append(" · Time left: ")
-                append(mapsSnap.etaOrNa())
+                append(mapsSnap.timeLeftOrNa())
+                if (mapsSnap.etaClockText != null) {
+                    append(" · Arrive ")
+                    append(mapsSnap.etaClockText)
+                }
                 append('\n')
                 when {
                     !mapsAccessOn ->
-                        append("Open settings below and enable iTVS Connect.")
+                        append(
+                            "If it says Controlled by Restricted setting: " +
+                                "Settings → Apps → iTVS Connect → ⋮ → Allow restricted settings, " +
+                                "then enable Notification access."
+                        )
                     mapsDebug.mapsNotifSeen && mapsDebug.lastError != null ->
                         append(mapsDebug.lastError)
                     mapsSnap.isNavigating -> {

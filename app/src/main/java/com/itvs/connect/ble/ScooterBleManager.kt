@@ -419,6 +419,46 @@ class ScooterBleManager(private val context: Context) {
         }
     }
 
+    /**
+     * Send native nav HUD: `0x5A 0x4E` control (pictogram + distances) plus `0x4F` text.
+     * Keep calling while Maps TBT is active (~every rotator refresh).
+     */
+    fun sendNavigationHud(
+        maps: MapsNavSnapshot,
+        textRow1: String,
+        textRow2: String = ""
+    ) {
+        scope.launch {
+            val packets = PacketBuilder.buildNavigationPackets(
+                distanceMeters = maps.nextTurnDistanceMeters ?: 0,
+                remainingTimeMinutes = maps.remainingTimeMinutesOrZero(),
+                remainingDistanceMeters = maps.remainingDistanceMetersOrZero(),
+                maneuverId = maps.pictogramId(),
+                textRow1 = textRow1,
+                textRow2 = textRow2,
+                isActive = true
+            )
+            packets.forEach { packet ->
+                safeWrite(packet)
+                delay(BleConstants.INTER_WRITE_DELAY_MS)
+            }
+        }
+    }
+
+    /** Clear native nav arrow overlay when Maps navigation ends. */
+    fun clearNavigationHud() {
+        scope.launch {
+            val packet = PacketBuilder.buildNavigationControlPacket(
+                distanceMeters = 0,
+                remainingTimeMinutes = 0,
+                remainingDistanceMeters = 0,
+                maneuverId = ManeuverPictogram.STRAIGHT,
+                isActive = false
+            )
+            safeWrite(packet)
+        }
+    }
+
     fun sendCallUpdate(name: String, incoming: Boolean) {
         val row1 = if (incoming) "Incoming Call" else "Calling..."
         sendClusterMessage(row1, name)
